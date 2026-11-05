@@ -19,7 +19,7 @@ import { applyExtraDirsConfine } from '../src/provider.js';
 import { applyExtraDirsFence } from '../src/fs.js';
 import { optionalImport } from './support/host.js';
 import { Context } from '@deepseek-ai/cordis';
-import { asFsSeam } from './support/views.js';
+import { asFsSeam, asPermissionSeam } from './support/views.js';
 /**
  * Import a DSH package, resolving it from the pnpm store that installed the
  * running `dsh` when a bare specifier does not resolve. A linked plugin does
@@ -29,9 +29,10 @@ import { asFsSeam } from './support/views.js';
  */
 /** @type {typeof optionalImport} */
 const dsh = optionalImport;
-const [fsSandbox, sandboxLocal] = (await Promise.all([
+const [fsSandbox, sandboxLocal, permissionPresets] = (await Promise.all([
     dsh('@deepseek-ai/dsh-fs-sandbox'),
     dsh('@deepseek-ai/dsh-sandbox-local'),
+    dsh('@deepseek-ai/dsh-permission-presets'),
 ]));
 
 /** The seam `src/fs.js` wraps, and the policy fields `src/service.js` reads. */
@@ -106,4 +107,29 @@ test('the stock sandbox provider still offers the seam the confine wrapper needs
     // The base class is where the service name comes from, which is why a
     // subclass cannot coexist with the stock row.
     assert.equal(base.name, 'SandboxProvider', 'the base registers the fixed "sandbox" service name');
+});
+/** The accessor src/service.js reads a session's selection through. */
+test('the stock permission service still reads a selection through permissionState', {
+    skip: permissionPresets === undefined ? 'the DSH permission package is not resolvable here' : false,
+}, async () => {
+    if (permissionPresets === undefined)
+        return;
+    const proto = asPermissionSeam(permissionPresets.PermissionPresetService.prototype);
+    // The session projection accessor the plugin used to call per key is
+    // deprecated, so the selection is read from the service that owns it.
+    // current() is no substitute: it derives an effective name rather than
+    // returning the recorded one, so a session that selected nothing would
+    // still appear to have selected whatever bundle matches the defaults.
+    assert.equal(typeof proto.permissionState, 'function', 'permissionState is the accessor the plugin reads');
+    assert.equal(typeof proto.current, 'function', 'the owner keeps its derived accessor beside it');
+    // The accessor answers only once activation has registered the projection,
+    // and the plugin turns that refusal into 'nothing selected' instead of
+    // letting it escape from the enforcement path.
+    const ctx = new Context();
+    Object.assign(ctx, {
+        shell: { sandboxMode: 'workspace-write' },
+        approval: { config: { policy: 'ask' } },
+    });
+    const instance = asPermissionSeam(new permissionPresets.PermissionPresetService(ctx, permissionPresets.PermissionPresetService.Config({})));
+    assert.throws(() => instance.permissionState({ id: 'session-under-test' }), /not ready/, 'an inactive service refuses to answer');
 });

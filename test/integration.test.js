@@ -276,6 +276,45 @@ test('a changed preset table is republished live', { skip }, async () => {
     assert.deepEqual(service.presetNames, ['scratch']);
     assert.equal(permissions.presets.rust, undefined);
 });
+test('a session whose permission service is not ready yet selects nothing', { skip }, async () => {
+    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        await mkdir(extra);
+        const session = { id: 'session-1' };
+        // The stock accessor throws until activation has registered its
+        // projection. Enforcement asks on every confined call, so that
+        // refusal must read as 'nothing selected' rather than propagating
+        // out of the wrapper and failing the call itself.
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: () => { throw new Error('permission: presets are not ready'); },
+            },
+            sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
+        });
+        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+            presets: { rust: { writableDirs: [extra] } },
+        }));
+        await service.ready();
+        assert.equal(service.presetFor(session), undefined, 'an unreadable selection grants nothing');
+        assert.deepEqual(service.rootsFor(session), []);
+        assert.deepEqual(service.extraRootsFor({ mode: 'workspace-write', sessionId: 'session-1', workspaceRoot: base }), []);
+        // Without the owner mounted at all the same holds, so a profile that
+        // does not mount presets still loads this plugin.
+        const { ctx: bare } = fakeContext({ sessions: { get: () => session } });
+        const other = new ExtraSandboxPresetsService(asContext(bare), serviceConfig(ExtraSandboxPresetsService.Config, {
+            presets: { rust: { writableDirs: [extra] } },
+        }));
+        await other.ready();
+        assert.equal(other.presetFor(session), undefined);
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
 test('each preset grants only its own directories, and only to its own session', { skip }, async () => {
     const { ExtraSandboxPresetsService } = await import('../src/service.js');
     const base = await makeFixture();
@@ -291,8 +330,7 @@ test('each preset grants only its own directories, and only to its own session',
         const session = { id: 'session-1' };
         const prompt = promptRegistry();
         const { ctx } = fakeContext({
-            permissionPresets: { presets: {}, emitCatalogChanged() { } },
-            sessionProjections: { stateOf: () => ({ preset: selected }) },
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: selected }) },
             sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
             systemPrompt: prompt,
         });
@@ -359,8 +397,7 @@ test('an unconfined preset never amends the stock note', { skip }, async () => {
         const session = { id: 'session-1' };
         const prompt = promptRegistry();
         const { ctx } = fakeContext({
-            permissionPresets: { presets: {}, emitCatalogChanged() { } },
-            sessionProjections: { stateOf: () => ({ preset: selected }) },
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: selected }) },
             sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
             systemPrompt: prompt,
         });
@@ -399,8 +436,7 @@ test('a workspace entry resolves against the workspace of each session', { skip 
         const second = { id: 'second', header: { cwd: two } };
         const prompt = promptRegistry();
         const { ctx } = fakeContext({
-            permissionPresets: { presets: {}, emitCatalogChanged() { } },
-            sessionProjections: { stateOf: () => ({ preset: 'plus' }) },
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: 'plus' }) },
             sessions: { get: (/** @type {string} */ id) => [first, second].find((session) => session.id === id) },
             // The stock policy resolves a session's workspace boundary for the
             // enforcement layers; the plugin reads the same value it reports.
@@ -444,8 +480,7 @@ test('an unusable configured directory is ignored, never granted', { skip }, asy
         /** @type {string[]} */ const warnings = [];
         const session = { id: 's' };
         const { ctx } = fakeContext({
-            permissionPresets: { presets: {}, emitCatalogChanged() { } },
-            sessionProjections: { stateOf: () => ({ preset: 'rust' }) },
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: 'rust' }) },
             sessions: { get: () => session },
         });
         ctx.logger.warn = (/** @type {string} */ message) => { warnings.push(message); };
@@ -494,9 +529,10 @@ test('wrapping the live filesystem widens only the selected preset and session',
             fs,
             // `ctx.inject(['fs', 'sandbox'])` runs the wrapper install immediately.
             sandbox: { async confine() { throw new Error('unused here'); } },
-            permissionPresets: { presets: {}, emitCatalogChanged() { } },
-            sessionProjections: {
-                stateOf: (/** @type {unknown} */ session) => ({ preset: session === inside ? selected : 'workspace-write' }),
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => ({ preset: session === inside ? selected : 'workspace-write' }),
             },
             sessions: { get: (/** @type {string} */ id) => [inside, outside].find((session) => session.id === id) },
         });
@@ -557,9 +593,10 @@ test('wrapping the live provider binds the selected preset directories per sessi
         const { ctx } = fakeContext({
             sandbox,
             fs: { async checkedTarget(/** @type {unknown} */ _target, /** @type {unknown} */ _policy) { return 'unused'; } },
-            permissionPresets: { presets: {}, emitCatalogChanged() { } },
-            sessionProjections: {
-                stateOf: (/** @type {unknown} */ session) => ({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => ({
                     preset: session === inside ? 'workspace-write-extra' : 'workspace-write',
                 }),
             },

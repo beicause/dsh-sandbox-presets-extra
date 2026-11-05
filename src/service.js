@@ -50,15 +50,13 @@ import {
 /** @typedef {import('./contracts.js').SessionLike} SessionLike */
 /** @typedef {import('./contracts.js').ResolvedPolicy} ResolvedPolicy */
 /** @typedef {import('./contracts.js').SandboxPolicyHost} SandboxPolicyHost */
+/** @typedef {import('./contracts.js').PermissionKnobs} PermissionKnobs */
 /** @typedef {import('./contracts.js').PermissionTableHost} PermissionTableHost */
 /** @typedef {import('./contracts.js').PromptRegistry} PromptRegistry */
 /** @typedef {import('./contracts.js').ReportableRejection} ReportableRejection */
 /** @typedef {import('./contracts.js').SandboxPresetsConfig} SandboxPresetsConfig */
 
 export const name = 'dsh-extra-sandbox-presets'
-
-/** Session projection key owned by `@deepseek-ai/dsh-permission-presets`. */
-const PERMISSIONS_KEY = 'permissions'
 
 /** The one sandbox mode that never confines, so extra directories are moot. */
 const UNCONFINED_MODE = 'danger-full-access'
@@ -98,6 +96,24 @@ const serviceOf = (ctx, serviceName) =>
  */
 const isPermissionTableHost = (value) =>
   typeof value === 'object' && value !== null && typeof /** @type {PermissionTableHost} */ (value).presets === 'object'
+
+/**
+ * The knobs a session currently has, read from the service that owns them.
+ * `permissionState` throws while that service is still activating, which is
+ * not an error here: until it settles the session has selected nothing either.
+ *
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the composition context.
+ * @param {unknown} session - the session to read the selection of.
+ * @returns {PermissionKnobs | undefined} the folded knobs, or `undefined` when none can be read.
+ */
+const permissionStateOf = (ctx, session) => {
+  const host = /** @type {PermissionTableHost | undefined} */ (serviceOf(ctx, 'permissionPresets'))
+  try {
+    return host?.permissionState?.(session)
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * The workspace root one resolved policy carries. The enforcing services
@@ -274,8 +290,12 @@ export class ExtraSandboxPresetsService extends Service {
   }
 
   /**
-   * The configured preset a session has selected, if any. Read from the
-   * permission service's projection (the last recorded permission preset).
+   * The configured preset a session has selected, if any.
+   *
+   * The selection belongs to the permission service, which folds it into a
+   * projection and reads it back for its own `current`; `permissionState` is
+   * that read. Reading the session projection directly instead is deprecated
+   * and logs a warning per key, so this goes through the owner.
    *
    * @param {unknown} [session] - the calling session, or `undefined` for agentless calls.
    * @returns {PresetEntry | undefined} the selected configured preset, or `undefined`.
@@ -283,10 +303,7 @@ export class ExtraSandboxPresetsService extends Service {
   presetFor(session = undefined) {
     this._refresh()
     if (session === undefined || session === null) return undefined
-    const state = /** @type {{ stateOf?: (session: unknown, key: string) => { preset?: unknown } | undefined }} */ (
-      serviceOf(this.ctx, 'sessionProjections')
-    )?.stateOf?.(session, PERMISSIONS_KEY)
-    const selected = state?.preset
+    const selected = permissionStateOf(this.ctx, session)?.preset
     if (typeof selected !== 'string') return undefined
     return this._presets.find((entry) => entry.name === selected)
   }

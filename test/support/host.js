@@ -105,6 +105,7 @@ export const storeResolve = (/** @type {string} */ specifier) => {
  *   : S extends '@deepseek-ai/dsh-system-prompt' ? typeof import('@deepseek-ai/dsh-system-prompt')
  *   : S extends '@deepseek-ai/dsh-fs-sandbox' ? typeof import('@deepseek-ai/dsh-fs-sandbox')
  *   : S extends '@deepseek-ai/dsh-sandbox-local' ? typeof import('@deepseek-ai/dsh-sandbox-local')
+ *   : S extends '@deepseek-ai/dsh-permission-presets' ? typeof import('@deepseek-ai/dsh-permission-presets')
  *   : unknown) | undefined>} the module namespace, or `undefined` when it is not available.
  */
 export const optionalImport = async (specifier) => {

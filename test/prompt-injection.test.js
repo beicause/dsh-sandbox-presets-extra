@@ -55,10 +55,12 @@ const mountService = async (/** @type {{ presets: Record<string, unknown>, selec
     const session = { id: 'session-under-test' };
     assert.ok(await host.mountSystemPrompt(), 'the stock prompt registry is mounted');
     await host.provideDependencies({
-        permissionPresets: { presets, emitCatalogChanged() { } },
-        // The projection the plugin reads the session's selection from.
-        sessionProjections: {
-            stateOf: (/** @type {unknown} */ _session, /** @type {string} */ key) => (key === 'permissions' ? { preset: options.selected() } : undefined),
+        // The plugin publishes its presets into this table and reads the
+        // session's selection back through the owner's own accessor.
+        permissionPresets: {
+            presets,
+            emitCatalogChanged() { },
+            permissionState: () => ({ preset: options.selected() }),
         },
         sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
         fs: {},

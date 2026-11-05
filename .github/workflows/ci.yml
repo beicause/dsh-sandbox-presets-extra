@@ -20,10 +20,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest supported runtime and the current one. The package is plain
-        # JavaScript, so the spread is kept narrow on purpose only to cover both
-        # node --test behaviours (directory vs. file-list handling).
-        node: ['22', '24']
+        # The oldest supported runtime and the current one. The floor is the one
+        # the harness itself declares (engines.node >= 24.9), because the tests
+        # mount the real DSH packages: running them on an older runtime would
+        # report on a combination the harness refuses to run. The spread is kept
+        # narrow on purpose, only to cover both node --test behaviours
+        # (directory vs. file-list handling).
+        node: ['24', '26']
     steps:
       - uses: actions/checkout@v4
 

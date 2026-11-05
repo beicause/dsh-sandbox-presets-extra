@@ -142,10 +142,20 @@ export interface SandboxPolicyHost {
   resolve?(request: { session?: unknown; mode?: unknown }): { workspaceRoot?: unknown } | undefined;
 }
 
-/** The permission service surface this plugin publishes into. */
+/** The permission knobs one session currently carries. */
+export interface PermissionKnobs {
+  /** The preset name last recorded for the session, before any derivation. */
+  readonly preset?: unknown;
+  readonly sandbox?: unknown;
+  readonly approval?: unknown;
+}
+
+/** The permission service surface this plugin reads from and publishes into. */
 export interface PermissionTableHost {
   /** The live preset table; `private` in the shipped typings, so declared here. */
   readonly presets: Record<string, PresetSpec>;
+  /** The knobs the session currently has; `private` in the shipped typings too. */
+  permissionState?(session: unknown): PermissionKnobs | undefined;
   /** Invalidates a client's cached permission catalog. */
   emitCatalogChanged?(): void;
 }

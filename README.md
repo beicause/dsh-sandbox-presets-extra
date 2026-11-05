@@ -185,32 +185,42 @@ natural place to write it.
 
 This plugin declares no `@deepseek-ai/dsh-*` peer range, and the harness checks
 only such peers. Its compatibility therefore rests on something narrower and
-more exact: **the shape of two mounted services** (plus one event and one
-context name). That shape is what the code actually uses, and the service half
-is pinned by `test/contract.test`.js` against the real classes, so a harness
-upgrade that moves any of it fails the suite immediately rather than narrowing a
-preset in production.
+more exact: **the shape of the mounted services it reads and wraps** (plus one
+context name). That shape is what the code actually uses, and it is pinned by
+`test/contract.test.js` against the real classes, so a harness upgrade that
+moves any of it fails the suite immediately rather than narrowing a preset in
+production.
 
 | Depends on | Used by |
 | --- | --- |
-| `fs.checkedTarget(target, policy)` rejects with code `FS_SANDBOX_DENIED` | `src/fs`.js` |
-| `fs.resolve(path)` resolves a target carrying `targetKey` | `src/fs`.js` |
-| `sandbox.confine(argv, policy, signal)` resolves to an object carrying `argv` | `src/provider`.js` |
+| `fs.checkedTarget(target, policy)` rejects with code `FS_SANDBOX_DENIED` | `src/fs.js` |
+| `fs.resolve(path)` resolves a target carrying `targetKey` | `src/fs.js` |
+| `sandbox.confine(argv, policy, signal)` resolves to an object carrying `argv` | `src/provider.js` |
 | Policy fields `mode` and `sessionId`; result field `argv` | both wrappers |
-| `permissionPresets.presets` and `emitCatalogChanged()` | `src/service`.js` |
-| The prompt registry, and a `sandbox:policy` context to place the note beside | `src/service`.js` |
+| `permissionPresets.presets` and `emitCatalogChanged()` | `src/service.js` |
+| `permissionPresets.permissionState(session)`, returning the recorded knobs | `src/service.js` |
+| The prompt registry, and a `sandbox:policy` context to place the note beside | `src/service.js` |
 
-Two properties keep this robust across upgrades:
+Several properties keep this robust across upgrades:
 
 * The wrappers call the stock methods through `await`, so a stock method that
   changes between synchronous and asynchronous keeps working.
 * Both wrappers operate on the returned object rather than assuming a bare argv,
   so a return value that grows fields keeps working.
+* A session's selection is read from the service that owns it, not from the
+  session projection store, where `stateOf(session, key)` is deprecated and warns
+  once per key; `permissionState` is the same value the owner uses for its own
+  `current`, and an activation that has not finished yet reads as no selection
+  rather than as a failure.
 
 When a mounted service does not expose the expected seam at all, the plugin
 **reports it once per service** and leaves the instance untouched. It never
 disables a stock row, so the failure mode of any unexpected harness shape is a
 logged warning and stock behaviour — never a missing filesystem or sandbox.
+
+Tested against harness `0.2.2-rc.1`. That release raises the minimum Node.js to
+`24.9`, so this plugin declares the same floor in `engines`, and its CI matrix
+starts there.
 
 ## Platform support
 
@@ -227,12 +237,12 @@ logged warning and stock behaviour — never a missing filesystem or sandbox.
 
 | File | Role |
 | --- | --- |
-| `src/service`.js` | `ctx.sandboxPresets`: owns the configured preset table, decides per session which preset applies, resolves `workspace:` entries against the calling session, wraps the two enforcement services, publishes the presets, and registers the model-facing note beside the stock sandbox note. |
-| `src/presets`.js` | Normalizes the configured table and expands each preset's directories. |
-| `src/fs`.js` | Wraps the live filesystem's containment check. |
-| `src/provider`.js` | Wraps the live sandbox provider's `confine`. |
-| `src/roots`.js` | Path expansion and containment checks. |
-| `src/plan`.js` | Pure bwrap argv transformation. |
+| `src/service.js` | `ctx.sandboxPresets`: owns the configured preset table, decides per session which preset applies, resolves `workspace:` entries against the calling session, wraps the two enforcement services, publishes the presets, and registers the model-facing note beside the stock sandbox note. |
+| `src/presets.js` | Normalizes the configured table and expands each preset's directories. |
+| `src/fs.js` | Wraps the live filesystem's containment check. |
+| `src/provider.js` | Wraps the live sandbox provider's `confine`. |
+| `src/roots.js` | Path expansion and containment checks. |
+| `src/plan.js` | Pure bwrap argv transformation. |
 | `cordis.patch.yml` | Inserts the one plugin row. |
 | `test/contract.test.js` | Pins the harness seams this plugin extends. |
 

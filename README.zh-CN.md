@@ -154,28 +154,35 @@ workspace-write-extra:
 ## 与 harness 的兼容性
 
 本插件不声明任何 `@deepseek-ai/dsh-*` 的 peer 范围，而 harness 只检查这类 peer。
-因此它的兼容性建立在更精确也更狭窄的东西上：**两个已挂载服务的形状**（外加一个事件名
-与一个 context 名）。这个形状才是代码实际使用的东西，其中服务部分由
-`test/contract.test`.js` 对**真实类**加以固定——所以任何移动了它的 harness 升级都会
+因此它的兼容性建立在更精确也更狭窄的东西上：**它所读取并包装的那些已挂载服务的形状**
+（外加一个 context 名）。这个形状才是代码实际使用的东西，其中服务部分由
+`test/contract.test.js` 对**真实类**加以固定——所以任何移动了它的 harness 升级都会
 立刻让测试失败，而不是在生产环境里悄悄收窄某个预设。
 
 | 依赖 | 使用处 |
 | --- | --- |
-| `fs.checkedTarget(target, policy)` 以错误码 `FS_SANDBOX_DENIED` 拒绝 | `src/fs`.js` |
-| `fs.resolve(path)` 解析出带 `targetKey` 的 target | `src/fs`.js` |
-| `sandbox.confine(argv, policy, signal)` 解析为带 `argv` 的对象 | `src/provider`.js` |
+| `fs.checkedTarget(target, policy)` 以错误码 `FS_SANDBOX_DENIED` 拒绝 | `src/fs.js` |
+| `fs.resolve(path)` 解析出带 `targetKey` 的 target | `src/fs.js` |
+| `sandbox.confine(argv, policy, signal)` 解析为带 `argv` 的对象 | `src/provider.js` |
 | policy 的 `mode`、`sessionId` 字段；结果的 `argv` 字段 | 两个包装 |
-| `permissionPresets.presets` 与 `emitCatalogChanged()` | `src/service`.js` |
-| 提示词注册表，以及用于放置该说明、紧邻 `sandbox:policy` 的位置 | `src/service`.js` |
+| `permissionPresets.presets` 与 `emitCatalogChanged()` | `src/service.js` |
+| `permissionPresets.permissionState(session)`，返回记录的旋钮值 | `src/service.js` |
+| 提示词注册表，以及用于放置该说明、紧邻 `sandbox:policy` 的位置 | `src/service.js` |
 
-有两个性质让它在升级中保持稳健：
+有若干性质让它在升级中保持稳健：
 
 * 包装通过 `await` 调用自带方法，因此自带方法在同步与异步之间变化仍可工作。
 * 两个包装都在**返回的对象**上操作，而不假设它是裸 argv，因此返回值新增字段仍可工作。
+* 会话选中的预设从拥有它的服务读取，而非从 session projection store 读取——后者的
+  `stateOf(session, key)` 已废弃且每个 key 告警一次；`permissionState` 与该服务自己
+  `current` 所用的值相同，尚未完成的激活读作没有选择，而不是读作失败。
 
 当某个已挂载服务完全不暴露预期的接缝时，插件会**每个服务告警一次**，并保持该实例
 不变。它从不禁用自带行，因此任何意外 harness 形状下的失败模式都只是日志告警加自带
 行为——绝不会变成文件系统或沙箱缺失。
+
+已针对 harness `0.2.2-rc.1` 测试。该版本把最低 Node.js 提高到 `24.9`，因此本插件在
+`engines` 中声明同一下限，CI 矩阵也从那里起步。
 
 ## 平台支持
 
@@ -190,11 +197,11 @@ workspace-write-extra:
 
 | 文件 | 作用 |
 | --- | --- |
-| `src/service`.js` | `ctx.sandboxPresets`：持有已配置的预设表、按会话判定哪个预设生效、把 `workspace:` 条目按调用会话解析、包装两个执行服务、发布预设，并在自带沙箱说明旁注册模型可见的那段说明。 |
-| `src/presets`.js` | 归一化配置的预设表，并展开每个预设的目录。 |
-| `src/fs`.js` | 包装运行中文件系统的包含性检查。 |
-| `src/provider`.js` | 包装运行中沙箱 provider 的 `confine`。 |
-| `src/roots`.js` | 路径展开与包含性判定。 |
+| `src/service.js` | `ctx.sandboxPresets`：持有已配置的预设表、按会话判定哪个预设生效、把 `workspace:` 条目按调用会话解析、包装两个执行服务、发布预设，并在自带沙箱说明旁注册模型可见的那段说明。 |
+| `src/presets.js` | 归一化配置的预设表，并展开每个预设的目录。 |
+| `src/fs.js` | 包装运行中文件系统的包含性检查。 |
+| `src/provider.js` | 包装运行中沙箱 provider 的 `confine`。 |
+| `src/roots.js` | 路径展开与包含性判定。 |
 | `src/plan.js` | 纯函数式的 bwrap argv 变换。 |
 | `cordis.patch.yml` | 插入唯一的一行插件。 |
 | `test/contract.test.js` | 固定本插件所扩展的 harness 接缝。 |
