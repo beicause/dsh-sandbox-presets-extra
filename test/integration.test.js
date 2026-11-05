@@ -185,7 +185,7 @@ const promptRegistry = () => {
     };
 };
 test('every configured preset is published in the permission table and catalog', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const catalogChanged = [];
     /** @type {{ presets: Record<string, unknown>, emitCatalogChanged: () => void }} */
     const permissions = {
@@ -204,7 +204,7 @@ test('every configured preset is published in the permission table and catalog',
         permissionPresets: permissions,
         systemPrompt: prompt,
     });
-    const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+    const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
         presets: {
             'workspace-write-extra': { writableDirs: [] },
             rust: { writableDirs: [] },
@@ -229,14 +229,14 @@ test('every configured preset is published in the permission table and catalog',
     assert.equal(prompt.render(undefined), '', 'no session means no note');
     // A reserved name is refused instead of shadowing the shipped presets.
     const reserved = fakeContext({ permissionPresets: permissions }).ctx;
-    const other = new ExtraSandboxPresetsService(asContext(reserved), serviceConfig(ExtraSandboxPresetsService.Config, {
+    const other = new SandboxPresetsExtraService(asContext(reserved), serviceConfig(SandboxPresetsExtraService.Config, {
         presets: { auto: { sandbox: 'workspace-write' }, good: { sandbox: 'read-only' } },
     }));
     assert.deepEqual(other.presetNames, ['good']);
     assert.equal(permissions.presets.auto, undefined);
     // A configured preset carries a label only when the caller gave one.
     const labelled = fakeContext({ permissionPresets: permissions }).ctx;
-    new ExtraSandboxPresetsService(asContext(labelled), serviceConfig(ExtraSandboxPresetsService.Config, {
+    new SandboxPresetsExtraService(asContext(labelled), serviceConfig(SandboxPresetsExtraService.Config, {
         presets: { tools: { sandbox: 'read-only', name: 'Tools only', description: 'No workspace write' } },
     }));
     assert.deepEqual(permissions.presets.tools, {
@@ -252,7 +252,7 @@ test('every configured preset is published in the permission table and catalog',
     assert.equal(permissions.presets.scratch, undefined);
 });
 test('a changed preset table is republished live', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const catalogChanged = [];
     /** @type {{ presets: Record<string, unknown>, emitCatalogChanged: () => void }} */
     const permissions = {
@@ -264,7 +264,7 @@ test('a changed preset table is republished live', { skip }, async () => {
     const holder = { table: { rust: { writableDirs: [] } } };
     // Constructed without schema validation: the point here is the volatile
     // reference the service reads live, not the input shape Cordis validates.
-    const service = new ExtraSandboxPresetsService(asContext(ctx), {
+    const service = new SandboxPresetsExtraService(asContext(ctx), {
         presets: { get: () => holder.table },
     });
     assert.deepEqual(service.presetNames, ['rust']);
@@ -277,7 +277,7 @@ test('a changed preset table is republished live', { skip }, async () => {
     assert.equal(permissions.presets.rust, undefined);
 });
 test('a session whose permission service is not ready yet selects nothing', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         const extra = join(base, 'extra');
@@ -295,7 +295,7 @@ test('a session whose permission service is not ready yet selects nothing', { sk
             },
             sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
         });
-        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: { rust: { writableDirs: [extra] } },
         }));
         await service.ready();
@@ -305,7 +305,7 @@ test('a session whose permission service is not ready yet selects nothing', { sk
         // Without the owner mounted at all the same holds, so a profile that
         // does not mount presets still loads this plugin.
         const { ctx: bare } = fakeContext({ sessions: { get: () => session } });
-        const other = new ExtraSandboxPresetsService(asContext(bare), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const other = new SandboxPresetsExtraService(asContext(bare), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: { rust: { writableDirs: [extra] } },
         }));
         await other.ready();
@@ -316,7 +316,7 @@ test('a session whose permission service is not ready yet selects nothing', { sk
     }
 });
 test('each preset grants only its own directories, and only to its own session', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         const workspaceExtra = join(base, 'workspace-extra');
@@ -334,7 +334,7 @@ test('each preset grants only its own directories, and only to its own session',
             sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
             systemPrompt: prompt,
         });
-        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: {
                 'workspace-write-extra': { writableDirs: [workspaceExtra] },
                 scratch: { sandbox: 'read-only', writableDirs: [scratch] },
@@ -353,7 +353,7 @@ test('each preset grants only its own directories, and only to its own session',
         // The plugin's own context names the directories the selected preset grants.
         const noteFor = () => prompt.render(session);
         const widened = noteFor();
-        assert.match(widened, /dsh-extra-sandbox-presets plugin additionally allows writing these configured directories/);
+        assert.match(widened, /dsh-sandbox-presets-extra plugin additionally allows writing these configured directories/);
         // The preset that grants the directories is named, so a session with more
         // than one configured preset can tell which one is in force.
         assert.ok(widened.includes('"workspace-write-extra" preset'), 'the granting preset is named');
@@ -388,7 +388,7 @@ test('each preset grants only its own directories, and only to its own session',
     }
 });
 test('an unconfined preset never amends the stock note', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         const anywhere = join(base, 'anywhere');
@@ -401,7 +401,7 @@ test('an unconfined preset never amends the stock note', { skip }, async () => {
             sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
             systemPrompt: prompt,
         });
-        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: { wide: { sandbox: 'danger-full-access', writableDirs: [anywhere] } },
         }));
         await service.ready();
@@ -420,7 +420,7 @@ test('an unconfined preset never amends the stock note', { skip }, async () => {
     }
 });
 test('a workspace entry resolves against the workspace of each session', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         // Two sessions with different workspaces, as the harness folds them from
@@ -448,7 +448,7 @@ test('a workspace entry resolves against the workspace of each session', { skip 
             },
             systemPrompt: prompt,
         });
-        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: { plus: { writableDirs: [outside, 'workspace:notes'] } },
         }));
         await service.ready();
@@ -470,7 +470,7 @@ test('a workspace entry resolves against the workspace of each session', { skip 
     }
 });
 test('an unusable configured directory is ignored, never granted', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         const good = join(base, 'good');
@@ -484,7 +484,7 @@ test('an unusable configured directory is ignored, never granted', { skip }, asy
             sessions: { get: () => session },
         });
         ctx.logger.warn = (/** @type {string} */ message) => { warnings.push(message); };
-        const service = new ExtraSandboxPresetsService(asContext(ctx), {
+        const service = new SandboxPresetsExtraService(asContext(ctx), {
             presets: {
                 rust: { writableDirs: [good, file, join(base, 'missing'), 'relative'] },
                 nope: { sandbox: 'not-a-mode', writableDirs: [good] },
@@ -507,7 +507,7 @@ test('an unusable configured directory is ignored, never granted', { skip }, asy
 test('wrapping the live filesystem widens only the selected preset and session', { skip: skip || fsSandbox === undefined ? 'the DSH filesystem package is not resolvable here' : false }, async () => {
     if (fsSandbox === undefined)
         return;
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         const workspace = join(base, 'workspace');
@@ -536,7 +536,7 @@ test('wrapping the live filesystem widens only the selected preset and session',
             },
             sessions: { get: (/** @type {string} */ id) => [inside, outside].find((session) => session.id === id) },
         });
-        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: {
                 'workspace-write-extra': { writableDirs: [extra] },
                 scratch: { sandbox: 'read-only', writableDirs: [scratch] },
@@ -579,7 +579,7 @@ test('wrapping the live filesystem widens only the selected preset and session',
 test('wrapping the live provider binds the selected preset directories per session', { skip: skip || sandboxLocal === undefined ? 'the DSH sandbox package is not resolvable here' : false }, async () => {
     if (sandboxLocal === undefined)
         return;
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
     try {
         const workspace = join(base, 'workspace');
@@ -602,7 +602,7 @@ test('wrapping the live provider binds the selected preset directories per sessi
             },
             sessions: { get: (/** @type {string} */ id) => [inside, outside].find((session) => session.id === id) },
         });
-        const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
             presets: { 'workspace-write-extra': { writableDirs: [extra] } },
         }));
         await service.ready();
@@ -638,7 +638,7 @@ test('wrapping the live provider binds the selected preset directories per sessi
     }
 });
 test('a mounted service without the expected seam is reported, not silently ignored', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     /** @type {string[]} */ const warnings = [];
     // Both enforcement services are mounted but neither exposes the interface the
     // plugin extends, which is what a harness upgrade that moved the seam looks
@@ -650,7 +650,7 @@ test('a mounted service without the expected seam is reported, not silently igno
         systemPrompt: {},
     });
     ctx.logger.warn = (/** @type {string} */ message) => { warnings.push(message); };
-    new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+    new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
         presets: { rust: { writableDirs: [] } },
     }));
     assert.equal(warnings.length, 2, warnings.join('\n'));
@@ -666,7 +666,7 @@ test('a mounted service without the expected seam is reported, not silently igno
         systemPrompt: {},
     });
     again.ctx.logger.warn = (/** @type {string} */ message) => { warnings.push(message); };
-    const service = new ExtraSandboxPresetsService(asContext(again.ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+    const service = new SandboxPresetsExtraService(asContext(again.ctx), serviceConfig(SandboxPresetsExtraService.Config, {
         presets: { rust: { writableDirs: ['/nonexistent-probe-dir'] } },
     }));
     await service.ready();
@@ -675,7 +675,7 @@ test('a mounted service without the expected seam is reported, not silently igno
     assert.equal(seamWarnings.length, 2, warnings.join('\n'));
 });
 test('a recognized service is wrapped without any warning', { skip }, async () => {
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
     /** @type {string[]} */ const warnings = [];
     const { ctx } = fakeContext({
         fs: {
@@ -687,7 +687,7 @@ test('a recognized service is wrapped without any warning', { skip }, async () =
         systemPrompt: {},
     });
     ctx.logger.warn = (/** @type {string} */ message) => { warnings.push(message); };
-    const service = new ExtraSandboxPresetsService(asContext(ctx), serviceConfig(ExtraSandboxPresetsService.Config, {
+    const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
         presets: {},
     }));
     assert.deepEqual(warnings, [], warnings.join('\n'));

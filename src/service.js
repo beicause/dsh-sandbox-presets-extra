@@ -56,7 +56,7 @@ import {
 /** @typedef {import('./contracts.js').ReportableRejection} ReportableRejection */
 /** @typedef {import('./contracts.js').SandboxPresetsConfig} SandboxPresetsConfig */
 
-export const name = 'dsh-extra-sandbox-presets'
+export const name = 'dsh-sandbox-presets-extra'
 
 /** The one sandbox mode that never confines, so extra directories are moot. */
 const UNCONFINED_MODE = 'danger-full-access'
@@ -131,7 +131,7 @@ const workspaceRootOf = (policy, session) => {
   return typeof cwd === 'string' && isAbsolute(cwd) ? cwd : undefined
 }
 
-export class ExtraSandboxPresetsService extends Service {
+export class SandboxPresetsExtraService extends Service {
   static Config = z.object({
     /**
      * The permission presets to register, keyed by preset name. Each value
@@ -444,7 +444,7 @@ export class ExtraSandboxPresetsService extends Service {
   /** @param {string} message */
   _warn(message) {
     try {
-      /** @type {{ logger?: { warn?: (message: string) => void } }} */ (/** @type {unknown} */ (this.ctx)).logger?.warn?.(`extra-sandbox-presets: ${message}`)
+      /** @type {{ logger?: { warn?: (message: string) => void } }} */ (/** @type {unknown} */ (this.ctx)).logger?.warn?.(`sandbox-presets-extra: ${message}`)
     } catch {
       // A logger failure must never affect enforcement.
     }
@@ -580,4 +580,4 @@ function detailOf(error) {
   return String(message ?? error)
 }
 
-export default ExtraSandboxPresetsService
+export default SandboxPresetsExtraService

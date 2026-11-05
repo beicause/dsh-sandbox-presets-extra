@@ -29,7 +29,7 @@ import { withExtraBinds } from './plan.js'
 /** @typedef {import('./contracts.js').ConfineDeps} ConfineDeps */
 
 /** Own-property key holding the wrapped method, so wrapping stays idempotent. */
-const WRAPPED = Symbol.for('dsh-extra-sandbox-presets/wrapped-confine')
+const WRAPPED = Symbol.for('dsh-sandbox-presets-extra/wrapped-confine')
 
 /**
  * The slice of the live sandbox provider this wrapper extends. Declared locally

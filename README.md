@@ -1,4 +1,4 @@
-# dsh-extra-sandbox-presets
+# dsh-sandbox-presets-extra
 
 English | [简体中文](README.zh-CN.md)
 
@@ -99,8 +99,8 @@ Both surfaces are supported.
 ### Profile config
 
 ```yaml
-- id: extra-sandbox-presets
-  name: dsh-extra-sandbox-presets
+- id: sandbox-presets-extra
+  name: dsh-sandbox-presets-extra
   config:
     presets:
       # The session workspace plus a few caches.

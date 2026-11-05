@@ -1,4 +1,4 @@
-# dsh-extra-sandbox-presets bundle patch.
+# dsh-sandbox-presets-extra bundle patch.
 #
 # One row only. The plugin registers every preset in its own `presets` config
 # as a DSH permission preset and widens writes for the sessions that select one
@@ -26,7 +26,7 @@
 # this row only names the plugin and its defaults.
 
 - insert:
-    - id: extra-sandbox-presets
-      name: "dsh-extra-sandbox-presets"
+    - id: sandbox-presets-extra
+      name: "dsh-sandbox-presets-extra"
       config:
         presets: {}

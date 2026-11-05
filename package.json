@@ -1,5 +1,5 @@
 {
-  "name": "dsh-extra-sandbox-presets",
+  "name": "dsh-sandbox-presets-extra",
   "version": "0.5.0",
   "private": true,
   "description": "Registers arbitrary configured DSH permission presets, each selecting a sandbox mode and approval policy plus the directories writable on top of it. Linux bwrap only.",

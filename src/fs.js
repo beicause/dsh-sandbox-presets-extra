@@ -24,7 +24,7 @@ import { isPathUnder } from './roots.js'
 /** @typedef {import('./contracts.js').ExtraRootsFor} ExtraRootsFor */
 
 /** Own-property key holding the wrapped method, so wrapping stays idempotent. */
-const WRAPPED = Symbol.for('dsh-extra-sandbox-presets/wrapped-fence')
+const WRAPPED = Symbol.for('dsh-sandbox-presets-extra/wrapped-fence')
 
 /** The denial code the stock fence raises for a containment failure. */
 const DENIED = 'FS_SANDBOX_DENIED'

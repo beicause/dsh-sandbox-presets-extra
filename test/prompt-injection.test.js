@@ -66,8 +66,8 @@ const mountService = async (/** @type {{ presets: Record<string, unknown>, selec
         fs: {},
         sandbox: {},
     });
-    const { ExtraSandboxPresetsService } = await import('../src/service.js');
-    const mounted = host.ctx.plugin(ExtraSandboxPresetsService, { presets: options.presets });
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const mounted = host.ctx.plugin(SandboxPresetsExtraService, { presets: options.presets });
     await host.settle(400);
     return { host, session, presets, mounted };
 };
@@ -133,7 +133,7 @@ test('the note reaches the prompt the model receives', { skip }, async () => {
     });
     try {
         const { assembled, refreshed } = await assembleNote(host, session);
-        assert.match(assembled, /dsh-extra-sandbox-presets plugin additionally allows writing these configured directories/);
+        assert.match(assembled, /dsh-sandbox-presets-extra plugin additionally allows writing these configured directories/);
         assert.ok(assembled.includes('"plus" preset'), 'the preset in force is named');
         assert.ok(assembled.includes(`"${writable}"`), 'the granted directory is named in the prompt');
         // This is the assertion the earlier implementation failed: the note only
@@ -246,7 +246,7 @@ test('unloading the plugin removes its note from the prompt', { skip }, async ()
         selected: () => 'plus',
     });
     try {
-        assert.match((await assembleNote(host, session)).refreshed, /dsh-extra-sandbox-presets plugin additionally allows writing/);
+        assert.match((await assembleNote(host, session)).refreshed, /dsh-sandbox-presets-extra plugin additionally allows writing/);
         // The registration has to go with the plugin, or a reload would leave a
         // context behind that keeps naming directories nothing grants. Unloading
         // goes through the handle Cordis returns, which the Loader disposes on

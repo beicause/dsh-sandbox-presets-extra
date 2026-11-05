@@ -1,4 +1,4 @@
-# dsh-extra-sandbox-presets
+# dsh-sandbox-presets-extra
 
 [English](README.md) | 简体中文
 
@@ -78,8 +78,8 @@ system-prompt 服务在同一层内以名字为键，重名会被拒绝。
 ### profile 配置
 
 ```yaml
-- id: extra-sandbox-presets
-  name: dsh-extra-sandbox-presets
+- id: sandbox-presets-extra
+  name: dsh-sandbox-presets-extra
   config:
     presets:
       # 会话工作区，外加几个缓存目录。
