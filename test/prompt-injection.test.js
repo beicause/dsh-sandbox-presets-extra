@@ -133,9 +133,14 @@ test('the note reaches the prompt the model receives', { skip }, async () => {
     });
     try {
         const { assembled, refreshed } = await assembleNote(host, session);
-        assert.match(assembled, /dsh-sandbox-presets-extra plugin additionally allows writing these configured directories/);
+        assert.match(assembled, /overrides the "Current DSH file policy" note above/);
+        assert.match(assembled, /this session is NOT read-only for those directories/);
+        assert.ok(assembled.includes('Do not refuse, skip, defer, or request an approval/escalation'), 'the model is told to attempt the write normally');
+        assert.ok(assembled.includes('Only an actual denial returned by the tool means the path is blocked.'), 'only a real denial counts as blocked');
+        assert.ok(assembled.includes('They apply only while that preset remains selected.'), 'the grant expires with the preset');
+        assert.ok(assembled.includes('If a later runtime-context snapshot names a different preset, the latest snapshot is authoritative.'), 'a newer snapshot wins');
         assert.ok(assembled.includes('"plus" preset'), 'the preset in force is named');
-        assert.ok(assembled.includes(`"${writable}"`), 'the granted directory is named in the prompt');
+        assert.ok(assembled.includes(`- "${writable}"`), 'each granted directory is listed on its own line');
         // This is the assertion the earlier implementation failed: the note only
         // existed in the assembled copy, so the refreshed — and therefore rendered
         // — prompt carried none of it.
@@ -233,6 +238,8 @@ test('a read-only preset states its exception against the read-only boundary', {
         assert.ok(assembled.includes(`"${writable}"`), 'the granted directory is named');
         assert.ok(assembled.includes('"scratch" preset'), 'the read-only preset is named');
         assert.match(assembled, /even under the read-only policy above/);
+        assert.match(assembled, /this session is NOT read-only for those directories/);
+        assert.ok(assembled.includes('Do not refuse, skip, defer, or request an approval/escalation'), 'the behavioural fallback applies under read-only too');
     }
     finally {
         await host.disposeAll();
@@ -246,7 +253,7 @@ test('unloading the plugin removes its note from the prompt', { skip }, async ()
         selected: () => 'plus',
     });
     try {
-        assert.match((await assembleNote(host, session)).refreshed, /dsh-sandbox-presets-extra plugin additionally allows writing/);
+        assert.match((await assembleNote(host, session)).refreshed, /overrides the "Current DSH file policy" note above/);
         // The registration has to go with the plugin, or a reload would leave a
         // context behind that keeps naming directories nothing grants. Unloading
         // goes through the handle Cordis returns, which the Loader disposes on

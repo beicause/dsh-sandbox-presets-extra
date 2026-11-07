@@ -536,18 +536,24 @@ export class SandboxPresetsExtraService extends Service {
    * The model-facing note for one session, or an empty string when it grants
    * nothing beyond what the stock policy note already describes.
    *
-   * The stock note is written from the sandbox mode alone, so it reads as a
-   * closed boundary in both confined modes: under `read-only` it is a flat
-   * prohibition, and under `workspace-write` it names the session workspace as
-   * the writable area. The exception is therefore stated outright in each case
-   * rather than left to "additionally" to be read as an override of the
-   * sentence before it. `danger-full-access` never confines, so it is excluded
-   * and only confined modes reach the clause.
+   * The stock note is rendered from the sandbox mode alone and reads as a closed
+   * boundary in both confined modes, so a plain statement that the plugin
+   * "additionally" grants directories is easily read as subordinate to it — the
+   * model then treats the session as read-only. This note is therefore an
+   * explicit behavioural instruction: it names its own precedence over the stock
+   * note, denies the read-only reading outright, lists the directories one per
+   * line so a path can be matched against them, and tells the model to attempt
+   * the write normally instead of deferring to the policy wording. It mirrors
+   * the stock read-only note's own "do not refuse from this policy alone"
+   * fallback, which the plugin's earlier declarative sentence lacked.
    *
-   * The preset name is named because a configured preset is what grants the
-   * directories: when several are configured, the model has to know which one is
-   * in force to answer whether a path is writable. The injector is named so the
-   * note can be traced back to its source.
+   * The preset name and the "only while that preset remains selected" expiry are
+   * kept deliberately: runtime-context snapshots are appended rather than
+   * replaced by the agent loop, so an older snapshot must carry its own
+   * invalidation. An explicit rule naming a later snapshot with a different
+   * preset as authoritative resolves the case where two snapshots disagree.
+   * `danger-full-access` never confines, so it is excluded and no note is
+   * contributed.
    *
    * @param {unknown} [session] - the calling session, or `undefined` for agentless calls.
    * @returns {string} the note, or an empty string when no directory applies.
@@ -560,12 +566,17 @@ export class SandboxPresetsExtraService extends Service {
     // session, so the model is told where the directories actually are.
     const roots = this.resolvedDirsFor(entry.name, this.workspaceRootFor(/** @type {SessionLike | undefined} */ (session)))
     if (roots.length === 0) return ''
-    return `The ${name} plugin additionally allows writing these configured directories`
-      + ` while the "${entry.name}" preset is selected`
-      + exceptionClauseFor(entry.sandbox)
-      + ': '
-      + `${roots.map((root) => `"${root}"`).join(', ')}. `
-      + 'They apply only while that preset remains selected.'
+    return `IMPORTANT — this overrides the "Current DSH file policy" note above for the directories listed below.`
+      + ` While the "${entry.name}" preset is selected, this session is NOT read-only for those directories:`
+      + ` writes to them are allowed${exceptionClauseFor(entry.sandbox)}.`
+      + ` The ${name} plugin grants exactly these directories:`
+      + '\n' + roots.map((root) => `- "${root}"`).join('\n')
+      + `\nA path is writable when it is one of these directories or lies under one of them, even if the stock policy note appears to forbid it.`
+      + ` Do not refuse, skip, defer, or request an approval/escalation for a write to such a path because the policy sounds read-only:`
+      + ` call the write/edit/bash tool normally and follow any denial and escalation guidance it returns.`
+      + ` Only an actual denial returned by the tool means the path is blocked.`
+      + ` They apply only while that preset remains selected.`
+      + ` If a later runtime-context snapshot names a different preset, the latest snapshot is authoritative.`
   }
 }
 

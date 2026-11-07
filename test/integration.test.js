@@ -353,15 +353,18 @@ test('each preset grants only its own directories, and only to its own session',
         // The plugin's own context names the directories the selected preset grants.
         const noteFor = () => prompt.render(session);
         const widened = noteFor();
-        assert.match(widened, /dsh-sandbox-presets-extra plugin additionally allows writing these configured directories/);
+        assert.match(widened, /overrides the "Current DSH file policy" note above/);
+        assert.match(widened, /this session is NOT read-only for those directories/);
+        assert.ok(widened.includes('Do not refuse, skip, defer, or request an approval/escalation'), 'the model is told to attempt the write normally');
+        assert.ok(widened.includes('If a later runtime-context snapshot names a different preset, the latest snapshot is authoritative.'), 'a newer snapshot wins');
         // The preset that grants the directories is named, so a session with more
         // than one configured preset can tell which one is in force.
         assert.ok(widened.includes('"workspace-write-extra" preset'), 'the granting preset is named');
-        assert.ok(widened.includes(`"${workspaceExtra}"`), 'the granted directory is named');
+        assert.ok(widened.includes(`- "${workspaceExtra}"`), 'the granted directory is listed on its own line');
         // The standing policy is workspace-write, where the stock note names the
         // session workspace as the writable area, so the exception is stated
         // against that boundary rather than the read-only one.
-        assert.match(widened, /, whether or not they are inside the session workspace:/);
+        assert.ok(widened.includes(', including those outside the session workspace.'), 'the exception is stated against the workspace boundary');
         assert.doesNotMatch(widened, /even under the read-only policy/);
         selected = 'scratch';
         assert.deepEqual(service.rootsFor(session), [scratch]);
@@ -408,8 +411,8 @@ test('an unconfined preset never amends the stock note', { skip }, async () => {
         // The directories are still recorded, so the preset is selectable and its
         // directories are known; nothing confines, so they grant nothing extra.
         assert.equal(service.presetFor(session)?.name, 'wide');
-        // `danger-full-access` already allows every path, so a sentence about
-        // "additionally" would be wrong: the plugin must contribute nothing.
+        // `danger-full-access` already allows every path, so a note granting
+        // extra directories would be wrong: the plugin must contribute nothing.
         assert.equal(prompt.render(session), '', 'no note is contributed under an unconfined mode');
         // The enforcement policy is unconfined too: `extraRootsFor` stays empty so
         // neither wrapper loosens anything.

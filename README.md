@@ -54,21 +54,35 @@ the target itself and compares it against the preset's directories. That is what
 lets a `read-only` preset grant writes, and it grants exactly the directories it
 lists.
 
-The model-facing note needs the same correction, because the stock
-`sandbox:policy` note is rendered from the mode alone: under `read-only` it
-states that nothing may be modified, and under `workspace-write` it names only
-the workspace, while a selected preset may in fact make further directories
-writable. The plugin therefore registers **a runtime context of its own**, right
-after the stock note, naming the directories the selected preset grants. In both
-confined modes the note reads as a closed boundary, so the sentence states the
-exception outright instead of relying on "additionally" alone to be read as an
-override of the sentence before it: under `read-only` it says the directories are
-writable *even under the read-only policy above* (the stock sentence reads as a
-flat prohibition), and under `workspace-write` it says they are writable *whether
-or not they are inside the session workspace* (the stock sentence names only that
-path and reads as the whole writable area). A `danger-full-access` preset
-contributes nothing: that mode already restricts nothing, so "additionally
-writable directories" would be a false statement rather than a correction.
+The model-facing note needs the same correction, and it has to be stronger than
+a plain statement. The stock `sandbox:policy` note is rendered from the mode
+alone: under `read-only` it states that nothing may be modified, and under
+`workspace-write` it names only the workspace. A declarative sentence saying the
+plugin "additionally" grants directories is easily read as subordinate to that
+closed boundary, and the model then treats the session as read-only even for a
+path the preset widens. The plugin therefore registers **a runtime context of
+its own**, right after the stock note, written as an explicit behavioural
+instruction:
+
+* it opens by stating that it **overrides the `Current DSH file policy` note
+  above** for the directories it lists;
+* it denies the misreading outright — *this session is NOT read-only for those
+  directories* — and states the mode-specific exception (`even under the
+  read-only policy above` / `including those outside the session workspace`);
+* it lists the directories **one per line**, so a path can be matched against
+  them, and gives the rule that a path under one of them is writable even when
+  the stock note appears to forbid it;
+* it tells the model **not to refuse, skip, defer, or request an
+  approval/escalation** for such a write, but to call the tool normally, follow
+  any denial and escalation guidance it returns, and treat only an actual denial
+  as a block — the same fallback the stock `read-only` note already gives itself;
+* it names the selected preset, says the grant applies *only while that preset
+  remains selected*, and declares a later snapshot naming a different preset
+  authoritative, so an older snapshot left in the history invalidates itself.
+
+A `danger-full-access` preset contributes nothing: that mode already restricts
+nothing, so an extra-dirs grant would be a false statement rather than a
+correction.
 
 The note is a context of its own rather than an amendment of the stock one, and
 that distinction is what makes it reach the model. The agent loop re-resolves
@@ -81,6 +95,11 @@ provider of this plugin's own survives that refresh, and re-rendering from the
 live selection is what makes the note follow a preset switch. Registering under
 the stock name is not an option either, since the system-prompt service keys
 contexts by name within one layer and rejects a duplicate.
+
+The context is deliberately *not* marked required: the stock `sandbox:policy`
+context is optional too, and `suppressRuntimeContext()` drops every optional
+context together. Keeping them in the same fate avoids an instruction that says
+it "overrides the note above" when no note above was rendered.
 
 Two consequences follow, and both matter:
 

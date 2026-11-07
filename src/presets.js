@@ -153,7 +153,7 @@ export function presetSpecOf(entry) {
  * The stock note is written from the sandbox mode alone. Under `read-only` it
  * is a flat prohibition, so the exception has to be stated as one. Under
  * `workspace-write` it names the session workspace as the writable area, so the
- * exception has to say the directories count regardless of that boundary.
+ * exception has to say the directories count outside that boundary too.
  *
  * `danger-full-access` is deliberately absent: it confines nothing, so this
  * plugin never amends its note and there is no clause to write. The parameter
@@ -161,14 +161,14 @@ export function presetSpecOf(entry) {
  * silently meaningless sentence.
  *
  * @param {ConfinedMode} mode - the confined sandbox mode the selected preset uses.
- * @returns {string} the clause to follow "these configured directories".
+ * @returns {string} the clause to follow the statement that writes are allowed.
  */
 export function exceptionClauseFor(mode) {
   switch (mode) {
     case 'read-only':
       return ', even under the read-only policy above'
     case 'workspace-write':
-      return ', whether or not they are inside the session workspace'
+      return ', including those outside the session workspace'
   }
 }
 
