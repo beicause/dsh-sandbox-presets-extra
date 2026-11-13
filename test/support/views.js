@@ -47,3 +47,28 @@ export const asFsSeam = (fs) => /** @type {FsSeam} */ (/** @type {unknown} */ (f
  * @returns {PermissionSeam} the same instance, with the private accessor visible.
  */
 export const asPermissionSeam = (service) => /** @type {PermissionSeam} */ (/** @type {unknown} */ (service))
+
+/**
+ * A view of the sandbox policy service that exposes the per-session root.
+ *
+ * `sessionWorkspaceRoot` is the member the plugin's boundary has to agree with
+ * and the published typings declare private, so a contract test cannot read it
+ * through the class type. `resolve` is public but answers the whole policy,
+ * which a stub could satisfy by accident. The base is `Omit`ted for the same
+ * reason as above.
+ */
+
+/**
+ * @typedef {Omit<import('@deepseek-ai/dsh-sandbox-policy').SandboxPolicyService, 'sessionWorkspaceRoot'> & {
+ *   sessionWorkspaceRoot(session?: { header?: { cwd?: string } }): string
+ * }} PolicySeam
+ */
+
+/**
+ * Read the stock policy service through its per-session root accessor.
+ *
+ * @param {import('@deepseek-ai/dsh-sandbox-policy').SandboxPolicyService} service - the service the plugin reads.
+ * @returns {PolicySeam} the same instance, with the private accessor visible.
+ */
+export const asPolicySeam = (service) => /** @type {PolicySeam} */ (/** @type {unknown} */ (service))
+

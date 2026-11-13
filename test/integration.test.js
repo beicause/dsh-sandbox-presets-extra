@@ -7,7 +7,7 @@
  * running Harness, so it exercises the plugin's own wiring: service
  * registration, preset publication, fs containment retry, and bwrap argv.
  *
- * Run with `node --test test/integration.test.ts`.
+ * Run with `node --test test/integration.test.js`.
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -489,7 +489,10 @@ test('a workspace entry that escapes the workspace is never granted', { skip: sk
         await symlink(outside, join(workspace, 'escape'));
         // The real stock filesystem, whose containment check the plugin extends.
         const fsCtx = new Context();
-        /** @type {import('@deepseek-ai/cordis').Context & { sandboxPolicy: { defaultMode: import('@deepseek-ai/dsh-sandbox').SandboxMode } }} */ (fsCtx).sandboxPolicy = { defaultMode: 'workspace-write' };
+        // A stand-in policy service carrying only the field the stock filesystem
+        // reads at construction. Assigning through Object.assign keeps the real
+        // service type, which the mounted class is, out of the way of the stub.
+        Object.assign(fsCtx, { sandboxPolicy: { defaultMode: 'workspace-write' } });
         const fs = new fsSandbox.SandboxedFileSystem(fsCtx, fsSandbox.SandboxedFileSystem.Config({ cwd: workspace }));
         /** @type {string[]} */ const warnings = [];
         const session = { id: 'inside', header: { cwd: workspace } };
@@ -641,7 +644,10 @@ test('wrapping the live filesystem widens only the selected preset and session',
         const outside = { id: 'outside' };
         // The REAL stock filesystem, mounted as the composition would.
         const fsCtx = new Context();
-        /** @type {import('@deepseek-ai/cordis').Context & { sandboxPolicy: { defaultMode: import('@deepseek-ai/dsh-sandbox').SandboxMode } }} */ (fsCtx).sandboxPolicy = { defaultMode: 'workspace-write' };
+        // A stand-in policy service carrying only the field the stock filesystem
+        // reads at construction. Assigning through Object.assign keeps the real
+        // service type, which the mounted class is, out of the way of the stub.
+        Object.assign(fsCtx, { sandboxPolicy: { defaultMode: 'workspace-write' } });
         const fs = new fsSandbox.SandboxedFileSystem(fsCtx, 
         // Validate through the real schema so required defaults are present.
         fsSandbox.SandboxedFileSystem.Config({ cwd: workspace }));

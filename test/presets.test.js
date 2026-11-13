@@ -4,7 +4,7 @@
  * `src/presets.js` is dependency-free by design (it only reaches the pure
  * `src/roots.js` helpers), so these run without the DSH packages.
  *
- * Run with `node --test test/presets.test.ts`.
+ * Run with `node --test test/presets.test.js`.
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';

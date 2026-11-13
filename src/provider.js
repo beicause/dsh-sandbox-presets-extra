@@ -35,6 +35,14 @@ import { existingDirectories } from './roots.js'
 /** Own-property key holding the wrapped method, so wrapping stays idempotent. */
 const WRAPPED = Symbol.for('dsh-sandbox-presets-extra/wrapped-confine')
 
+/** Reported when an earlier load of this plugin still owns the wrapper. */
+const ALREADY_WRAPPED =
+  'the sandbox confine is still wrapped by an earlier load of this plugin, so this load reuses that wrapper instead of installing a second one'
+
+/** Reported when this plugin's wrapper could not be removed exactly. */
+const TAKEN_OVER =
+  'the sandbox confine was replaced after this plugin wrapped it, so this plugin leaves its wrapper in place rather than restoring a method that is no longer there'
+
 /**
  * The slice of the live sandbox provider this wrapper extends. Declared locally
  * because the host's own typings are not a dependency of this package.
@@ -63,13 +71,20 @@ const isConfineService = (value) =>
  *
  * @param {unknown} sandbox - the live sandbox provider service instance.
  * @param {ConfineDeps} deps - reporting hooks: `extraRootsFor` and `reportUnsupported`.
+ * @param {(message: string) => void} [report] - warns about a wrapper this instance could not remove.
  * @returns {(() => void) | undefined} a disposer restoring the original method exactly,
  *   or `undefined` when this instance could not be wrapped.
  */
-export function applyExtraDirsConfine(sandbox, deps) {
+export function applyExtraDirsConfine(sandbox, deps, report = undefined) {
   if (!isConfineService(sandbox)) return undefined
   const provider = /** @type {ConfineService & { [WRAPPED]?: unknown }} */ (sandbox)
-  if (provider[WRAPPED] !== undefined) return () => {}
+  if (provider[WRAPPED] !== undefined) {
+    // Only one wrapper is installed per instance. A marker left behind by an
+    // earlier load means that load's wrapper — and its own directory lookup —
+    // is the one still in force, so this instance must not stack another.
+    report?.(ALREADY_WRAPPED)
+    return () => {}
+  }
   // The mount may define `confine` on the instance or inherit it from its
   // prototype; the descriptor records which, so restoring is exact either way.
   const descriptor = Object.getOwnPropertyDescriptor(provider, 'confine')
@@ -116,8 +131,13 @@ export function applyExtraDirsConfine(sandbox, deps) {
     writable: true,
   })
   return () => {
-    // Only undo our own wrapping; a later wrapper owns its own restore.
-    if (provider.confine !== wrapped) return
+    // Only undo our own wrapping; a later wrapper owns its own restore. Both
+    // conditions are checked because either half can be taken over on its own,
+    // and leaving the marker behind would block every later load from wrapping.
+    if (provider.confine !== wrapped || provider[WRAPPED] !== original) {
+      report?.(TAKEN_OVER)
+      return
+    }
     if (descriptor === undefined) delete /** @type {{ confine?: unknown }} */ (provider).confine
     else Object.defineProperty(provider, 'confine', descriptor)
     delete provider[WRAPPED]

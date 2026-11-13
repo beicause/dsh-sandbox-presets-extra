@@ -2,7 +2,7 @@
  * A real Cordis application and real DSH packages for the tests that must not
  * trust a hand-built context.
  *
- * `integration.test.ts` drives a stand-in context whose `inject` inlines every
+ * `integration.test.js` drives a stand-in context whose `inject` inlines every
  * callback and drops it when a dependency is missing. Real Cordis does neither:
  * an injected callback is deferred until the dependency is provided, re-run
  * when it is replaced, and handed a live child context whose `on` is the event
@@ -105,6 +105,8 @@ export const storeResolve = (/** @type {string} */ specifier) => {
  *   : S extends '@deepseek-ai/dsh-system-prompt' ? typeof import('@deepseek-ai/dsh-system-prompt')
  *   : S extends '@deepseek-ai/dsh-fs-sandbox' ? typeof import('@deepseek-ai/dsh-fs-sandbox')
  *   : S extends '@deepseek-ai/dsh-sandbox-local' ? typeof import('@deepseek-ai/dsh-sandbox-local')
+ *   : S extends '@deepseek-ai/dsh-sandbox-policy' ? typeof import('@deepseek-ai/dsh-sandbox-policy')
+ *   : S extends '@deepseek-ai/dsh-session' ? typeof import('@deepseek-ai/dsh-session')
  *   : S extends '@deepseek-ai/dsh-permission-presets' ? typeof import('@deepseek-ai/dsh-permission-presets')
  *   : unknown) | undefined>} the module namespace, or `undefined` when it is not available.
  */

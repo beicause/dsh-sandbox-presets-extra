@@ -202,7 +202,9 @@ workspace-write-extra:
 | policy 的 `mode`、`sessionId` 字段；结果的 `argv` 字段 | 两个包装 |
 | `permissionPresets.presets` 与 `emitCatalogChanged()` | `src/service.js` |
 | `permissionPresets.permissionState(session)`，返回记录的旋钮值 | `src/service.js` |
-| 提示词注册表，以及用于放置该说明、紧邻 `sandbox:policy` 的位置 | `src/service.js` |
+| `sandboxPolicy.resolve({session})`，返回 `workspaceRoot` 与 `sessionId` | `src/service.js` |
+| `sessions.get(id)`，返回存活会话或 `undefined` | `src/service.js` |
+| 提示词注册表：`context({name, order, text})` 与 `getContextOrder(name)` | `src/service.js` |
 
 有若干性质让它在升级中保持稳健：
 
@@ -216,8 +218,11 @@ workspace-write-extra:
 不变。它从不禁用自带行，因此任何意外 harness 形状下的失败模式都只是日志告警加自带
 行为——绝不会变成文件系统或沙箱缺失。
 
-已针对 harness `0.2.2-rc.1` 测试。该版本把最低 Node.js 提高到 `24.9`，因此本插件在
+已针对 harness `0.2.2-rc.2` 测试。该版本把最低 Node.js 提高到 `24.9`，因此本插件在
 `engines` 中声明同一下限，CI 矩阵也从那里起步。
+锁定的版本不只是一个下限：本插件所读取的 harness 形状在预发布之间会变——会话钉选、
+委派策略、可写根注册在 `0.2.2-rc.2` 里都动过——因此契约套件跟随 `devDependencies` 中的
+版本，运行了别的版本的 profile 属于套件未针对的情形。
 
 ## 平台支持
 
@@ -240,6 +245,9 @@ workspace-write-extra:
 | `src/plan.js` | 纯函数式的 bwrap argv 变换。 |
 | `cordis.patch.yml` | 插入唯一的一行插件。 |
 | `test/contract.test.js` | 固定本插件所扩展的 harness 接缝。 |
+| `test/support/host.js` | 真实的 Cordis 应用，以及运行中 `dsh` 所安装的 DSH 包的解析。 |
+| `test/support/views.js` | 暴露契约套件必须读取的私有成员的视图。 |
+| `scripts/require-no-skips.mjs` | 任一无作用例被跳过即判失败。 |
 
 源码就是带 JSDoc 类型的纯 JavaScript，JSDoc 不便表达的类型放在 `src/contracts.d.ts`。
 本包**从源码直接运行**：`main` 与 `exports` 都指向 `src/`，没有构建步骤，也没有

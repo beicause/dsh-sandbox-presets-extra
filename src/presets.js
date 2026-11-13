@@ -112,11 +112,17 @@ export function normalizePresets(raw) {
       continue
     }
 
+    const writableDirs = rawSpec.writableDirs ?? []
+    if (!Array.isArray(writableDirs)) {
+      rejected.push({ name, reason: 'writableDirs must be a list of paths' })
+      continue
+    }
+
     entries.push({
       name,
       sandbox: /** @type {SandboxMode} */ (sandbox),
       approval: /** @type {ApprovalPolicy} */ (approval),
-      writableDirs: Array.isArray(rawSpec.writableDirs) ? rawSpec.writableDirs : [],
+      writableDirs,
       // The display label, distinct from the table key. Left undefined when the
       // caller configured none, so the client renders the key itself instead of
       // a verbatim string it would not localize.

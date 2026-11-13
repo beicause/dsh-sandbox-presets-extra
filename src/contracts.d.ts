@@ -183,7 +183,12 @@ export interface PromptRegistry {
     order: number;
     text: (context: { agent?: { session?: unknown } }) => string;
   }): unknown;
-  getContextOrder(name: string): number;
+  /**
+   * The registered order of a stock placement, or `undefined` when the harness
+   * no longer names it — the case the caller falls back from rather than
+   * registering a non-finite order.
+   */
+  getContextOrder(name: string): number | undefined;
 }
 
 /** One rejection reported to the operator, from either normalization stage. */

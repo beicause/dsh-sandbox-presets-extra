@@ -2,7 +2,7 @@
  * Regression tests for the system-prompt injection.
  *
  * These run on a real Cordis application with the real prompt registry, which
- * `integration.test.ts` deliberately does not: its hand-built context inlines
+ * `integration.test.js` deliberately does not: its hand-built context inlines
  * every `inject` callback and drops it when a dependency is missing, so it can
  * never show that a registration fails to reach a live context.
  *
@@ -16,7 +16,7 @@
  * Every case skips when the DSH packages are not resolvable, which is the case
  * outside an installed profile.
  *
- * Run with `node --test test/prompt-injection.test.ts`.
+ * Run with `node --test test/prompt-injection.test.js`.
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';

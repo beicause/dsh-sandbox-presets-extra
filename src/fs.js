@@ -29,6 +29,14 @@ const WRAPPED = Symbol.for('dsh-sandbox-presets-extra/wrapped-fence')
 /** The denial code the stock fence raises for a containment failure. */
 const DENIED = 'FS_SANDBOX_DENIED'
 
+/** Reported when an earlier load of this plugin still owns the wrapper. */
+const ALREADY_WRAPPED =
+  'the filesystem containment check is still wrapped by an earlier load of this plugin, so this load reuses that wrapper instead of installing a second one'
+
+/** Reported when this plugin's wrapper could not be removed exactly. */
+const TAKEN_OVER =
+  'the filesystem containment check was replaced after this plugin wrapped it, so this plugin leaves its wrapper in place rather than restoring a method that is no longer there'
+
 /**
  * The slice of the live filesystem service this wrapper extends. Declared
  * locally because the host's own typings are not a dependency of this package.
@@ -68,13 +76,20 @@ const isFenceService = (value) =>
  *
  * @param {unknown} fs - the live filesystem service instance.
  * @param {ExtraRootsFor} extraRootsFor - reports the extra directories that apply to a policy.
+ * @param {(message: string) => void} [report] - warns about a wrapper this instance could not remove.
  * @returns {(() => void) | undefined} a disposer restoring the original method exactly,
  *   or `undefined` when this instance could not be wrapped.
  */
-export function applyExtraDirsFence(fs, extraRootsFor) {
+export function applyExtraDirsFence(fs, extraRootsFor, report = undefined) {
   if (!isFenceService(fs)) return undefined
   const fence = /** @type {FenceService & { [WRAPPED]?: unknown }} */ (fs)
-  if (fence[WRAPPED] !== undefined) return () => {}
+  if (fence[WRAPPED] !== undefined) {
+    // Only one wrapper is installed per instance. A marker left behind by an
+    // earlier load means that load's wrapper — and its own directory lookup —
+    // is the one still in force, so this instance must not stack another.
+    report?.(ALREADY_WRAPPED)
+    return () => {}
+  }
   // The mount may define the check on the instance or inherit it from its
   // prototype; the descriptor records which, so restoring is exact either way.
   const descriptor = Object.getOwnPropertyDescriptor(fence, 'checkedTarget')
@@ -117,8 +132,13 @@ export function applyExtraDirsFence(fs, extraRootsFor) {
     writable: true,
   })
   return () => {
-    // Only undo our own wrapping; a later wrapper owns its own restore.
-    if (fence[WRAPPED] !== undefined && fence.checkedTarget !== wrapped) return
+    // Only undo our own wrapping; a later wrapper owns its own restore. Both
+    // conditions are checked because either half can be taken over on its own,
+    // and leaving the marker behind would block every later load from wrapping.
+    if (fence.checkedTarget !== wrapped || fence[WRAPPED] !== original) {
+      report?.(TAKEN_OVER)
+      return
+    }
     if (descriptor === undefined) delete /** @type {{ checkedTarget?: unknown }} */ (fence).checkedTarget
     else Object.defineProperty(fence, 'checkedTarget', descriptor)
     delete fence[WRAPPED]

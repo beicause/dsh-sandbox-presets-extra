@@ -255,7 +255,9 @@ production.
 | Policy fields `mode` and `sessionId`; result field `argv` | both wrappers |
 | `permissionPresets.presets` and `emitCatalogChanged()` | `src/service.js` |
 | `permissionPresets.permissionState(session)`, returning the recorded knobs | `src/service.js` |
-| The prompt registry, and a `sandbox:policy` context to place the note beside | `src/service.js` |
+| `sandboxPolicy.resolve({session})`, returning `workspaceRoot` and `sessionId` | `src/service.js` |
+| `sessions.get(id)`, returning a live session or `undefined` | `src/service.js` |
+| The prompt registry: `context({name, order, text})` and `getContextOrder(name)` | `src/service.js` |
 
 Several properties keep this robust across upgrades:
 
@@ -274,9 +276,14 @@ When a mounted service does not expose the expected seam at all, the plugin
 disables a stock row, so the failure mode of any unexpected harness shape is a
 logged warning and stock behaviour — never a missing filesystem or sandbox.
 
-Tested against harness `0.2.2-rc.1`. That release raises the minimum Node.js to
+Tested against harness `0.2.2-rc.2`. That release raises the minimum Node.js to
 `24.9`, so this plugin declares the same floor in `engines`, and its CI matrix
 starts there.
+The pinned version matters beyond the floor: the harness shapes the plugin reads
+change between prereleases — session pinning, delegated policy, and writable-root
+registration all moved in `0.2.2-rc.2` — so the contract suite tracks the version
+in `devDependencies`, and a profile running a different one is a case the suite
+was not written against.
 
 ## Platform support
 
@@ -301,6 +308,9 @@ starts there.
 | `src/plan.js` | Pure bwrap argv transformation. |
 | `cordis.patch.yml` | Inserts the one plugin row. |
 | `test/contract.test.js` | Pins the harness seams this plugin extends. |
+| `test/support/host.js` | A real Cordis application plus resolution of the DSH packages the running `dsh` installed. |
+| `test/support/views.js` | Views exposing the private members the contract suite has to read. |
+| `scripts/require-no-skips.mjs` | Fails the run if any case skipped. |
 
 The sources are plain JavaScript with JSDoc types, and `src/contracts.d.ts`
 carries the structural shapes JSDoc states poorly. The package runs **from

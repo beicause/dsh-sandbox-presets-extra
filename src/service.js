@@ -33,7 +33,7 @@ import z from '@deepseek-ai/schemastery'
 import { applyExtraDirsFence } from './fs.js'
 import { applyExtraDirsConfine } from './provider.js'
 import { isAbsolute } from 'node:path'
-import { WORKSPACE_PREFIX, canonicalRootOf, workspaceEntryPath } from './roots.js'
+import { WORKSPACE_PREFIX, canonicalRootOf, detailOf, workspaceEntryPath } from './roots.js'
 import {
   APPROVAL_POLICIES,
   DEFAULT_APPROVAL,
@@ -108,22 +108,32 @@ const isPermissionTableHost = (value) =>
   typeof value === 'object' && value !== null && typeof /** @type {PermissionTableHost} */ (value).presets === 'object'
 
 /**
- * The knobs a session currently has, read from the service that owns them.
- * `permissionState` throws while that service is still activating, which is
- * not an error here: until it settles the session has selected nothing either.
+ * Whether a name in the permission table still holds the entry written for it,
+ * rather than one a third party replaced since.
  *
- * @param {import('@deepseek-ai/cordis').Context} ctx - the composition context.
- * @param {unknown} session - the session to read the selection of.
- * @returns {PermissionKnobs | undefined} the folded knobs, or `undefined` when none can be read.
+ * Restoring a shadowed value blindly would roll back that replacement, so the
+ * live entry is compared field by field with the one this plugin wrote.
+ *
+ * @param {Record<string, PresetSpec>} table - the live preset table.
+ * @param {string} presetName - one name this plugin published.
+ * @param {PresetSpec} written - the entry this plugin wrote.
+ * @returns {boolean} true while the name still holds that entry.
  */
-const permissionStateOf = (ctx, session) => {
-  const host = /** @type {PermissionTableHost | undefined} */ (serviceOf(ctx, 'permissionPresets'))
-  try {
-    return host?.permissionState?.(session)
-  } catch {
-    return undefined
-  }
+const stillHolds = (table, presetName, written) => {
+  const current = table[presetName]
+  if (typeof current !== 'object' || current === null) return false
+  return current.sandbox === written.sandbox && current.approval === written.approval
 }
+
+/**
+ * Whether a failure is the permission service saying it is not activated yet,
+ * which is a state every session passes through rather than a fault.
+ *
+ * @param {unknown} error - the thrown value.
+ * @returns {boolean} true when it only reports that the presets are not ready.
+ */
+const isNotReady = (error) =>
+  /not ready/i.test(String(/** @type {{ message?: unknown } } */ (error)?.message ?? error))
 
 /**
  * The workspace root one resolved policy carries. The enforcing services
@@ -183,6 +193,10 @@ export class SandboxPresetsExtraService extends Service {
     this._reported = undefined
     /** Workspace subpaths already reported as unusable, so a per-call check warns once. @type {Set<string>} */
     this._reportedRoots = new Set()
+    /** Permission-state failures already reported, so a broken owner warns once. @type {Set<unknown>} */
+    this._reportedStates = new Set()
+    /** Guards the one-time over-deep delegation chain warning. @type {boolean} */
+    this._depthReported = false
     /** Guards the one-time unsupported-backend warning. @type {boolean} */
     this._unsupportedReported = false
     /** Enforcement services already reported as missing the expected seam. @type {Set<string>} */
@@ -236,12 +250,14 @@ export class SandboxPresetsExtraService extends Service {
       this.ctx.inject([serviceName], (scope) => {
         const service = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (scope))[serviceName]
         scope.effect(() => {
+          /** @param {string} message */
+          const report = (message) => this._warn(message)
           const disposer = serviceName === 'fs'
-            ? applyExtraDirsFence(service, (policy) => this.extraRootsFor(policy))
+            ? applyExtraDirsFence(service, (policy) => this.extraRootsFor(policy), report)
             : applyExtraDirsConfine(service, {
               extraRootsFor: (policy) => this.extraRootsFor(policy),
               reportUnsupported: (runner) => this._reportUnsupported(runner),
-            })
+            }, report)
           if (disposer === undefined) {
             this._reportUnrecognized(serviceName)
             return () => {}
@@ -340,7 +356,7 @@ export class SandboxPresetsExtraService extends Service {
    * @returns {PresetEntry | undefined} the recorded configured preset, or `undefined`.
    */
   _recordedEntryFor(session) {
-    const selected = permissionStateOf(this.ctx, session)?.preset
+    const selected = this._permissionStateOf(session)?.preset
     if (typeof selected !== 'string') return undefined
     return this._presets.find((entry) => entry.name === selected)
   }
@@ -366,7 +382,7 @@ export class SandboxPresetsExtraService extends Service {
    * @returns {PresetEntry | undefined} the inherited configured preset, or `undefined`.
    */
   _inheritedEntryFor(session) {
-    const knobs = permissionStateOf(this.ctx, session)
+    const knobs = this._permissionStateOf(session)
     // A session that recorded a selection keeps it, and a session whose knobs
     // cannot be read yet has no delegation evidence either.
     if (knobs === undefined || knobs.preset != null) return undefined
@@ -383,11 +399,43 @@ export class SandboxPresetsExtraService extends Service {
       // The mode the delegated session runs under is inherited from the same
       // session, so a mismatch means the delegation pinned something else.
       if (entry !== undefined) return entry.sandbox === mode ? entry : undefined
-      const parentKnobs = permissionStateOf(this.ctx, parent)
+      const parentKnobs = this._permissionStateOf(parent)
       if (parentKnobs === undefined || parentKnobs.preset != null) return undefined
       current = parent
     }
+    // A chain this long is not a delegation tree the harness would build, so the
+    // remaining hops are dropped rather than followed further; saying so once
+    // turns a silently narrower grant into something visible in the log.
+    if (!this._depthReported) {
+      this._depthReported = true
+      this._warn(`stopped following a delegation chain after ${MAX_DELEGATION_DEPTH} hops`)
+    }
     return undefined
+  }
+
+  /**
+   * The knobs a session currently has, read from the service that owns them.
+   *
+   * `permissionState` throws while that service is still activating, which is a
+   * state every session passes through, not a fault: until it settles the
+   * session has selected nothing either. Any other failure would silently
+   * narrow every grant this plugin makes, so it is reported once instead of
+   * being folded into the same `undefined`.
+   *
+   * @param {unknown} session - the session to read the selection of.
+   * @returns {PermissionKnobs | undefined} the folded knobs, or `undefined` when none can be read.
+   */
+  _permissionStateOf(session) {
+    const host = /** @type {PermissionTableHost | undefined} */ (serviceOf(this.ctx, 'permissionPresets'))
+    try {
+      return host?.permissionState?.(session)
+    } catch (error) {
+      if (!isNotReady(error) && !this._reportedStates.has(error)) {
+        this._reportedStates.add(error)
+        this._warn(`reading the permission preset of a session failed: ${detailOf(error)}`)
+      }
+      return undefined
+    }
   }
 
   /**
@@ -543,12 +591,26 @@ export class SandboxPresetsExtraService extends Service {
 
   /**
    * Settle the current expansion. Callers that need the configured directories
-   * to be in force already (startup, tests) await this; the enforcement path
-   * deliberately does not, it serves the last settled snapshot.
+   * to be in force already (tests) await this; the enforcement path deliberately
+   * does not, it serves the last settled snapshot.
    * @returns {Promise<void>} a promise resolved once the current expansion has settled.
    */
   async ready() {
     await this._refresh()
+  }
+
+  /**
+   * Hold activation until the first expansion settles, so the snapshot the
+   * enforcement services read during activation already names the directories.
+   *
+   * The constructor only starts the expansion; cordis awaits whatever this hook
+   * returns before it publishes the fibre, so a call made while the plugin is
+   * activating waits here instead of being served an empty directory list.
+   *
+   * @returns {Promise<void>} a promise resolved once activation may proceed.
+   */
+  [Service.init]() {
+    return this.ready()
   }
 
   /** @param {readonly ReportableRejection[]} rejected */
@@ -589,8 +651,8 @@ export class SandboxPresetsExtraService extends Service {
     this.ctx.inject(['permissionPresets'], (scope) => {
       const permissions = /** @type {{ permissionPresets?: unknown }} */ (scope).permissionPresets
       scope.effect(() => {
-        /** Names this plugin wrote, mapped to the value it replaced. */
-        /** @type {Map<string, PresetSpec | undefined>} */
+        /** Names this plugin wrote, mapped to what it wrote and what that replaced. */
+        /** @type {Map<string, { written: PresetSpec, previous: PresetSpec | undefined }>} */
         const applied = new Map()
 
         const sync = () => {
@@ -600,14 +662,18 @@ export class SandboxPresetsExtraService extends Service {
           }
           const table = permissions.presets
           const wanted = new Map(this._presets.map((entry) => [entry.name, presetSpecOf(entry)]))
-          for (const [presetName, previous] of applied) {
+          for (const [presetName, { written, previous }] of applied) {
             if (wanted.has(presetName)) continue
+            if (!stillHolds(table, presetName, written)) {
+              applied.delete(presetName)
+              continue
+            }
             if (previous === undefined) delete table[presetName]
             else table[presetName] = previous
             applied.delete(presetName)
           }
           for (const [presetName, spec] of wanted) {
-            if (!applied.has(presetName)) applied.set(presetName, table[presetName])
+            if (!applied.has(presetName)) applied.set(presetName, { written: spec, previous: table[presetName] })
             table[presetName] = spec
           }
           permissions.emitCatalogChanged?.()
@@ -617,14 +683,16 @@ export class SandboxPresetsExtraService extends Service {
         sync()
         return () => {
           this._publish = undefined
-          if (isPermissionTableHost(permissions)) {
-            const table = permissions.presets
-            for (const [presetName, previous] of applied) {
-              if (previous === undefined) delete table[presetName]
-              else table[presetName] = previous
-            }
+          if (!isPermissionTableHost(permissions)) return
+          const table = permissions.presets
+          for (const [presetName, { written, previous }] of applied) {
+            // The name may have been rewritten by someone else since; putting the
+            // replaced value back would undo their change rather than this plugin's.
+            if (!stillHolds(table, presetName, written)) continue
+            if (previous === undefined) delete table[presetName]
+            else table[presetName] = previous
           }
-          if (isPermissionTableHost(permissions)) permissions.emitCatalogChanged?.()
+          permissions.emitCatalogChanged?.()
         }
       })
     })
@@ -645,15 +713,47 @@ export class SandboxPresetsExtraService extends Service {
     this.ctx.inject(['systemPrompt'], (scope) => {
       const registry = /** @type {{ systemPrompt?: PromptRegistry }} */ (scope).systemPrompt
       if (typeof registry?.context !== 'function') return
-      // Directly after the stock note, which states the boundary the exception
-      // is read against. Both orders come from the registry so a harness that
-      // moves the note keeps this entry beside it.
-      registry.context({
-        name: NOTE_CONTEXT,
-        order: registry.getContextOrder(POLICY_PLACEMENT) + 1,
-        text: (context) => this.noteFor(context?.agent?.session),
-      })
+      try {
+        registry.context({
+          name: NOTE_CONTEXT,
+          order: this._noteOrder(registry),
+          text: (context) => {
+            try {
+              return this.noteFor(context?.agent?.session)
+            } catch (error) {
+              // A throwing provider would fail the whole prompt assembly, which
+              // is worse than a step rendered without this note.
+              this._warn(`rendering the preset note failed: ${detailOf(error)}`)
+              return ''
+            }
+          },
+        })
+      } catch (error) {
+        this._warn(`registering the preset note failed: ${detailOf(error)}`)
+      }
     })
+  }
+
+  /**
+   * The order this plugin's context is registered at: directly after the stock
+   * note, which states the boundary the exception is read against.
+   *
+   * Both numbers come from the registry so a harness that moves the note keeps
+   * this entry beside it. A registry that no longer answers for that placement
+   * would hand back `undefined`, and adding to it yields `NaN`, which makes the
+   * registration itself throw; the entry is then placed at the end instead of
+   * disappearing from every prompt.
+   *
+   * @param {PromptRegistry} registry - the prompt registry service.
+   * @returns {number} the finite registration order to use.
+   */
+  _noteOrder(registry) {
+    const placement = registry.getContextOrder?.(POLICY_PLACEMENT)
+    if (Number.isFinite(placement)) return /** @type {number} */ (placement) + 1
+    this._warn(
+      `the prompt registry no longer places ${JSON.stringify(POLICY_PLACEMENT)}, so the preset note goes last instead of beside it`,
+    )
+    return Number.MAX_SAFE_INTEGER
   }
 
   /**
@@ -724,17 +824,6 @@ export class SandboxPresetsExtraService extends Service {
       + ` Selecting another preset in this session replaces the grant above.`
       + ` If a later runtime-context snapshot names a different preset, the latest snapshot is authoritative.`
   }
-}
-
-/**
- * The message of an unknown failure, reproducing `String(error?.message ?? error)`.
- *
- * @param {unknown} error
- * @returns {string}
- */
-function detailOf(error) {
-  const message = /** @type {{ message?: unknown } | undefined} */ (error)?.message
-  return String(message ?? error)
 }
 
 export default SandboxPresetsExtraService

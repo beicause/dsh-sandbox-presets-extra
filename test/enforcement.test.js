@@ -5,7 +5,7 @@
  * service the composition mounted, so a plain stand-in is enough to check the
  * exact widening rule and the exact restore behaviour.
  *
- * Run with `node test/enforcement.test.ts`.
+ * Run with `node test/enforcement.test.js`.
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';

@@ -1,7 +1,7 @@
 /**
  * Unit tests for the pure path logic behind the extra writable directories.
  *
- * Run with `node test/roots.test.ts` from the package directory. Uses only
+ * Run with `node test/roots.test.js` from the package directory. Uses only
  * Node built-ins so it can run without the DSH dependency tree.
  */
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { absoluteEntry, canonicalRootOf, existingDirectories, expandExtraDirs, isPathUnder, isUnderAny, workspaceEntryPath } from '../src/roots.js';
+import { absoluteEntry, canonicalRootOf, existingDirectories, expandExtraDirs, isPathUnder, workspaceEntryPath } from '../src/roots.js';
 const withTempTree = async (/** @type {(base: string) => Promise<unknown>} */ run) => {
     const base = await mkdtemp(join(tmpdir(), 'dsh-extra-dirs-'));
     try {
@@ -88,18 +88,6 @@ test('isPathUnder does not treat a name prefix as containment', async () => {
         await mkdir(root);
         await mkdir(sibling);
         assert.equal(await isPathUnder(sibling, root), false);
-    });
-});
-test('isUnderAny matches any configured root', async () => {
-    await withTempTree(async (/** @type {string} */ base) => {
-        const one = join(base, 'one');
-        const two = join(base, 'two');
-        await mkdir(one);
-        await mkdir(two);
-        assert.equal(await isUnderAny(join(two, 'f'), [one, two]), true);
-        assert.equal(await isUnderAny(join(one, 'f'), [one, two]), true);
-        assert.equal(await isUnderAny(join(base, 'elsewhere'), [one, two]), false);
-        assert.equal(await isUnderAny(join(one, 'f'), []), false);
     });
 });
 test('a workspace: entry is kept as a subpath instead of being resolved', async () => {

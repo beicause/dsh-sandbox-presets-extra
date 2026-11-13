@@ -7,7 +7,7 @@
 
 import { realpathSync, statSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, sep } from 'node:path'
 import { homedir } from 'node:os'
 
 /** @typedef {import('./contracts.js').RejectedEntry} RejectedEntry */
@@ -43,8 +43,9 @@ const isMissing = (/** @type {unknown} */ error) => MISSING_CODES.has(codeOf(err
  * Render `String(error?.message ?? error)` for an unknown caught value.
  *
  * @param {unknown} error
+ * @returns {string}
  */
-const detailOf = (error) => {
+export const detailOf = (error) => {
   const message = typeof error === 'object' && error !== null
     ? /** @type {{ message?: unknown }} */ (error).message
     : undefined
@@ -336,19 +337,3 @@ export async function isPathUnder(path, root) {
   }
 }
 
-/**
- * Whether any configured root contains `path`.
- *
- * @param {string} path - canonical target path.
- * @param {unknown} roots - the configured roots, an array of entries.
- * @returns {Promise<boolean>}
- */
-export async function isUnderAny(path, roots) {
-  for (const root of Array.isArray(roots) ? roots : []) {
-    if (typeof root !== 'string') continue
-    if (await isPathUnder(path, root)) return true
-  }
-  return false
-}
-
-export { resolve }

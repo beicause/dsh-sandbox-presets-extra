@@ -11,15 +11,15 @@
  * outside an installed profile; run it from a profile to exercise the real
  * classes.
  *
- * Run with `node --test test/contract.test.ts`.
+ * Run with `node --test test/contract.test.js`.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyExtraDirsConfine } from '../src/provider.js';
 import { applyExtraDirsFence } from '../src/fs.js';
-import { optionalImport } from './support/host.js';
+import { createHost, optionalImport } from './support/host.js';
 import { Context } from '@deepseek-ai/cordis';
-import { asFsSeam, asPermissionSeam } from './support/views.js';
+import { asFsSeam, asPermissionSeam, asPolicySeam } from './support/views.js';
 /**
  * Import a DSH package, resolving it from the pnpm store that installed the
  * running `dsh` when a bare specifier does not resolve. A linked plugin does
@@ -29,11 +29,17 @@ import { asFsSeam, asPermissionSeam } from './support/views.js';
  */
 /** @type {typeof optionalImport} */
 const dsh = optionalImport;
-const [fsSandbox, sandboxLocal, permissionPresets] = (await Promise.all([
+const [fsSandbox, sandboxLocal, permissionPresets, sandboxPolicy, sessionStore, systemPrompt] = (await Promise.all([
     dsh('@deepseek-ai/dsh-fs-sandbox'),
     dsh('@deepseek-ai/dsh-sandbox-local'),
     dsh('@deepseek-ai/dsh-permission-presets'),
+    dsh('@deepseek-ai/dsh-sandbox-policy'),
+    dsh('@deepseek-ai/dsh-session'),
+    dsh('@deepseek-ai/dsh-system-prompt'),
 ]));
+
+/** The policy service class, when the package resolves; the helper below mounts it. */
+const policyClass = sandboxPolicy?.SandboxPolicyService;
 
 /** The seam `src/fs.js` wraps, and the policy fields `src/service.js` reads. */
 test('the stock filesystem still offers the seam the fence wrapper needs', {
@@ -47,7 +53,10 @@ test('the stock filesystem still offers the seam the fence wrapper needs', {
     assert.equal(typeof proto.checkedTarget, 'function', 'checkedTarget is the seam the fence wraps');
     assert.equal(typeof proto.resolve, 'function', 'the wrapper re-resolves through this');
     const ctx = new Context();
-    /** @type {import('@deepseek-ai/cordis').Context & { sandboxPolicy: { defaultMode: import('@deepseek-ai/dsh-sandbox').SandboxMode } }} */ (ctx).sandboxPolicy = { defaultMode: 'workspace-write' };
+    // A stand-in policy service carrying only the field the stock filesystem
+    // reads at construction. Assigning through Object.assign keeps the real
+    // service type, which the mounted class is, out of the way of the stub.
+    Object.assign(ctx, { sandboxPolicy: { defaultMode: 'workspace-write' } });
     const instance = new fsSandbox.SandboxedFileSystem(ctx, fsSandbox.SandboxedFileSystem.Config({ cwd: process.cwd() }));
     // Inherited, not own: the wrapper records the descriptor so restore is exact.
     assert.equal(Object.hasOwn(instance, 'checkedTarget'), false, 'the seam is inherited, as the wrapper assumes');
@@ -133,3 +142,142 @@ test('the stock permission service still reads a selection through permissionSta
     const instance = asPermissionSeam(new permissionPresets.PermissionPresetService(ctx, permissionPresets.PermissionPresetService.Config({})));
     assert.throws(() => instance.permissionState({ id: 'session-under-test' }), /not ready/, 'an inactive service refuses to answer');
 });
+
+/**
+ * The assembly context the agent loop hands the registry: the calling agent, and
+ * through it the session the note is rendered for.
+ *
+ * The stock `AssembleContext` declares neither field — `agent` is contributed by
+ * `dsh-agent` through a module augmentation this package does not install,
+ * because the plugin only ever reads the session off the context it is handed.
+ *
+ * @param {string} sessionId - the session id to assemble for.
+ * @returns {import('@deepseek-ai/dsh-system-prompt').AssembleContext} the context, widened.
+ */
+const assemblyContext = (sessionId) => /** @type {import('@deepseek-ai/dsh-system-prompt').AssembleContext} */ (/** @type {unknown} */ ({ agent: { session: { id: sessionId } } }));
+/**
+ * The session id one assembly context carries, or an empty string.
+ *
+ * @param {import('@deepseek-ai/dsh-system-prompt').AssembleContext} context - the context a provider is evaluated with.
+ * @returns {string} the session id, as the plugin's own note provider reads it.
+ */
+const agentSessionId = (context) => /** @type {{ agent?: { session?: { id?: string } } }} */ (context).agent?.session?.id ?? '';
+/**
+ * Mount the real sandbox policy service in a live application, stubbing only the
+ * projection store it registers into.
+ *
+ * The service registers a session projection while activating, so a bare
+ * `new` leaves it unable to answer. Stubbing that one dependency runs the real
+ * `[Service.init]` and therefore the real `resolve`, which is what this test
+ * pins.
+ *
+ * @template T
+ * @param {(service: import('@deepseek-ai/dsh-sandbox-policy').SandboxPolicyService) => T} run
+ *   the case, given the mounted service.
+ * @returns {Promise<Awaited<T> | undefined>} whatever the case returns, or
+ *   `undefined` when the host or the service could not be mounted.
+ */
+const withResolvedPolicy = async (run) => {
+    const host = await createHost();
+    if (host === undefined || policyClass === undefined)
+        return undefined;
+    try {
+        host.ctx.plugin({
+            name: 'contract-stubs',
+            /** @param {import('@deepseek-ai/cordis').Context} scope - the live child context. */
+            apply(scope) {
+                scope.provide?.('sessionProjections', { register: async () => ({ stateOf: () => undefined }) });
+            },
+        });
+        await host.settle();
+        host.ctx.plugin(policyClass, { mode: 'workspace-write', workspaceRoot: process.cwd() });
+        await host.settle();
+        const service = /** @type {import('@deepseek-ai/dsh-sandbox-policy').SandboxPolicyService | undefined} */ (host.ctx.get('sandboxPolicy'));
+        if (service === undefined)
+            return undefined;
+        return await run(service);
+    }
+    finally {
+        await host.disposeAll();
+    }
+};
+
+/**
+ * The policy owner src/service.js reads a session's workspace root through, and
+ * the result fields it reads off the resolved policy.
+ */
+test('the stock sandbox policy still resolves the workspace root per session', {
+    skip: sandboxPolicy === undefined ? 'the DSH sandbox policy package is not resolvable here' : false,
+}, async () => {
+    if (sandboxPolicy === undefined)
+        return;
+    // Captured because the narrowing above does not reach into the callbacks below.
+    const policyPackage = sandboxPolicy;
+    const proto = policyPackage.SandboxPolicyService.prototype;
+    // The plugin hands the calling session to resolve() and reads
+    // `workspaceRoot` off the answer, because that is the boundary the stock
+    // sandbox:policy note names.
+    assert.equal(typeof proto.resolve, 'function', 'resolve is the accessor the plugin reads');
+    assert.equal(proto.resolve.constructor.name, 'Function', 'the plugin reads the result synchronously');
+    assert.equal(typeof asPolicySeam(proto).sessionWorkspaceRoot, 'function', 'the per-session root the plugin depends on');
+    // The stored Session is a full record; resolve() only reads its id and the
+    // recorded cwd, which is exactly what the plugin hands it.
+    const session = /** @type {import('@deepseek-ai/dsh-session').Session} */ (/** @type {unknown} */ ({ id: 'session-under-test', header: { cwd: process.cwd() } }));
+    const resolved = await withResolvedPolicy((service) => service.resolve({ session }));
+    assert.ok(resolved !== undefined, 'the real policy service mounts and answers');
+    assert.equal(resolved.workspaceRoot, process.cwd(), 'the session cwd is the resolved workspace root');
+    assert.equal(resolved.sessionId, 'session-under-test', 'the resolved policy names the session it was resolved for');
+    assert.equal(typeof resolved.mode, 'string', 'the resolved mode the wrappers read');
+    // The plugin treats a session without a cwd as having no root of its own and
+    // falls back, so the fallback has to keep naming the configured root.
+    const agentless = await withResolvedPolicy((service) => service.resolve({}));
+    assert.ok(agentless !== undefined, 'the real policy service mounts for an agentless call');
+    assert.equal(agentless.workspaceRoot, process.cwd(), 'an agentless call resolves to the configured root');
+});
+/**
+ * The service src/service.js walks a delegation chain through.
+ */
+test('the stock session store still looks a live session up by id', {
+    skip: sessionStore === undefined ? 'the DSH session package is not resolvable here' : false,
+}, async () => {
+    if (sessionStore === undefined)
+        return;
+    // The plugin reads a delegating session through `sessions.get(id)` when a
+    // child inherits the parent's preset. An unknown id has to answer
+    // `undefined` rather than throw, because a parent that already ended is a
+    // normal case for a child that is still running.
+    assert.equal(typeof sessionStore.SessionStore.prototype.get, 'function', 'get is the accessor the plugin reads');
+    const store = new sessionStore.SessionStore(new Context());
+    assert.equal(Object.hasOwn(store, 'get'), false, 'the seam is inherited, as the plugin assumes');
+    assert.equal(store.get('session-that-does-not-exist'), undefined, 'an unknown id reads as no session');
+});
+/**
+ * The prompt registry src/service.js places its own note through.
+ */
+test('the stock prompt registry still registers ordered context beside the policy note', {
+    skip: systemPrompt === undefined ? 'the DSH system prompt package is not resolvable here' : false,
+}, async () => {
+    if (systemPrompt === undefined)
+        return;
+    const proto = systemPrompt.SystemPrompt.prototype;
+    assert.equal(typeof proto.context, 'function', 'context is how the plugin contributes its note');
+    assert.equal(typeof proto.getContextOrder, 'function', 'the placement the plugin anchors on');
+    assert.equal(typeof proto.refreshContext, 'function', 'the per-request refresh the note survives');
+    const prompt = new systemPrompt.SystemPrompt(new Context(), systemPrompt.SystemPrompt.Config({}));
+    // The anchor the note is placed against, and the reason the plugin reads it
+    // from the registry rather than hardcoding the number.
+    assert.equal(prompt.getContextOrder('SANDBOX_POLICY'), 110, 'the stock policy note is placed at 110');
+    // An unknown placement answers `undefined` rather than throwing. Adding one to
+    // it yields NaN, which the registry itself refuses below — which is why the
+    // plugin falls back instead of letting the registration disappear.
+    assert.equal(prompt.getContextOrder(/** @type {import('@deepseek-ai/dsh-system-prompt').PromptContextOrderName} */ ('NOT_A_PLACEMENT')), undefined, 'an unknown placement reads as no order');
+    assert.throws(() => prompt.context({ name: 'contract:nan', order: Number.NaN, text: () => '' }), /must be a finite number/, 'the registry refuses a non-finite order');
+    // A registered provider is re-resolved per assembly and per refresh, which is
+    // what lets the note follow a preset switch instead of freezing at startup.
+    prompt.context({ name: 'contract:probe', order: 111, text: (context) => agentSessionId(context) });
+    const assembly = await prompt.assemble(assemblyContext('session-a'));
+    assert.deepEqual(assembly.contexts, [{ name: 'contract:probe', text: 'session-a' }], 'the provider text reaches the assembly');
+    const refreshed = prompt.refreshContext(assembly, assemblyContext('session-b'));
+    assert.deepEqual(refreshed.contexts, [{ name: 'contract:probe', text: 'session-b' }], 'a refresh re-reads the provider');
+});
+
