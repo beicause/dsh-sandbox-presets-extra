@@ -38,6 +38,27 @@ Enablement is per session: a preset's directories apply while that session's las
 recorded permission preset is that preset, which survives a restart because the
 choice lives in the session log.
 
+A delegated session inherits it. The harness gives a subagent only a bare sandbox
+mode and a `never` approval policy, never the preset name of the session that
+delegated it, so a subagent's own log records no selection and its directories
+would otherwise be empty in both the prompt and the fence. The plugin therefore
+reads the selection back from the delegating session, and requires the mode the
+delegation pinned to be the preset's own mode — a child deliberately pinned to a
+different mode did not receive that preset's write access, so nothing is
+inherited then. A chain of delegations is followed to the first recorded
+selection, and the grant is re-read on every call rather than frozen at
+delegation, so it stays in step with that session — up to the point where it
+selects a preset with another sandbox mode, which ends the grant instead of
+following it. A child is confined under one mode for its whole life, and a grant
+whose mode no longer matches what confines it would describe a boundary the fence
+refuses.
+
+Two limits follow from how the parent is read. The selection is looked up in the
+live session store, so a delegating session that is no longer live (finished,
+evicted, or not yet restored) leaves nothing to read and the child inherits no
+directories. And a delegation is only followed up to a fixed small number of
+hops, which no ordinary chain reaches.
+
 ## How it stays out of the way
 
 The plugin does not disable, replace, or reorder any stock row. It wraps the two
@@ -79,6 +100,13 @@ instruction:
 * it names the selected preset, says the grant applies *only while that preset
   remains selected*, and declares a later snapshot naming a different preset
   authoritative, so an older snapshot left in the history invalidates itself.
+
+A delegated session gets the same note with one wording change, because it never
+recorded the selection itself: instead of saying the preset is selected it says
+the session **was delegated from one running that preset**, and that the grant
+follows that session. Naming a preset the child's own runtime context does not
+contain is exactly the claim the note tells the model to trust only when a
+snapshot names it.
 
 A `danger-full-access` preset contributes nothing: that mode already restricts
 nothing, so an extra-dirs grant would be a false statement rather than a

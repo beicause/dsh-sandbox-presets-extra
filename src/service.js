@@ -48,11 +48,13 @@ import {
 /** @typedef {import('./contracts.js').PresetEntry} PresetEntry */
 /** @typedef {import('./contracts.js').PresetSpec} PresetSpec */
 /** @typedef {import('./contracts.js').SessionLike} SessionLike */
+/** @typedef {import('./contracts.js').SessionHost} SessionHost */
 /** @typedef {import('./contracts.js').ResolvedPolicy} ResolvedPolicy */
 /** @typedef {import('./contracts.js').SandboxPolicyHost} SandboxPolicyHost */
 /** @typedef {import('./contracts.js').PermissionKnobs} PermissionKnobs */
 /** @typedef {import('./contracts.js').PermissionTableHost} PermissionTableHost */
 /** @typedef {import('./contracts.js').PromptRegistry} PromptRegistry */
+/** @typedef {{ entry: PresetEntry, inherited: boolean }} ResolvedPreset */
 /** @typedef {import('./contracts.js').ReportableRejection} ReportableRejection */
 /** @typedef {import('./contracts.js').SandboxPresetsConfig} SandboxPresetsConfig */
 
@@ -60,6 +62,14 @@ export const name = 'dsh-sandbox-presets-extra'
 
 /** The one sandbox mode that never confines, so extra directories are moot. */
 const UNCONFINED_MODE = 'danger-full-access'
+
+/**
+ * How many delegation hops a preset selection is inherited through.
+ *
+ * The harness bounds delegation depth itself, so this only stops a malformed
+ * parent chain from looping; a chain longer than this inherits nothing.
+ */
+const MAX_DELEGATION_DEPTH = 8
 
 /**
  * This plugin's own runtime-context entry, placed directly after the stock
@@ -290,7 +300,8 @@ export class SandboxPresetsExtraService extends Service {
   }
 
   /**
-   * The configured preset a session has selected, if any.
+   * The configured preset that applies to a session, if any: the one it
+   * recorded itself, or the one it inherited when it was delegated.
    *
    * The selection belongs to the permission service, which folds it into a
    * projection and reads it back for its own `current`; `permissionState` is
@@ -298,14 +309,83 @@ export class SandboxPresetsExtraService extends Service {
    * and logs a warning per key, so this goes through the owner.
    *
    * @param {unknown} [session] - the calling session, or `undefined` for agentless calls.
-   * @returns {PresetEntry | undefined} the selected configured preset, or `undefined`.
+   * @returns {PresetEntry | undefined} the applicable configured preset, or `undefined`.
    */
   presetFor(session = undefined) {
     this._refresh()
+    return this._selectionFor(session)?.entry
+  }
+
+  /**
+   * The preset that applies to a session, and whether it was inherited.
+   *
+   * @param {unknown} [session] - the calling session, or `undefined` for agentless calls.
+   * @returns {ResolvedPreset | undefined} the entry and its provenance, or `undefined`.
+   */
+  _selectionFor(session = undefined) {
     if (session === undefined || session === null) return undefined
+    const own = this._recordedEntryFor(session)
+    if (own !== undefined) return { entry: own, inherited: false }
+    const inherited = this._inheritedEntryFor(session)
+    return inherited === undefined ? undefined : { entry: inherited, inherited: true }
+  }
+
+  /**
+   * The configured preset one session recorded for itself, ignoring any
+   * inherited one.
+   *
+   * @param {unknown} session - the session to read the selection of.
+   * @returns {PresetEntry | undefined} the recorded configured preset, or `undefined`.
+   */
+  _recordedEntryFor(session) {
     const selected = permissionStateOf(this.ctx, session)?.preset
     if (typeof selected !== 'string') return undefined
     return this._presets.find((entry) => entry.name === selected)
+  }
+
+  /**
+   * The configured preset a delegated session inherits from the session that
+   * delegated it.
+   *
+   * The harness hands a delegated session only the `auto` and
+   * `danger-full-access` identities as a `permission/preset` event; every other
+   * preset reaches a child as a bare `sandbox/mode` plus a `never` approval
+   * policy, so the child's own log names no preset at all and its directories
+   * would otherwise be empty in both the prompt and the fence. The child's
+   * recorded sandbox mode is the part that did come through, so it is required
+   * to match the preset's own mode: a caller that pinned a different mode on the
+   * delegation did not grant that preset's directories, and then nothing is
+   * inherited.
+   *
+   * A parent that recorded no preset of its own is itself a delegated session,
+   * so the chain is followed up to {@link MAX_DELEGATION_DEPTH} hops.
+   *
+   * @param {unknown} session - the delegated session looking for a preset.
+   * @returns {PresetEntry | undefined} the inherited configured preset, or `undefined`.
+   */
+  _inheritedEntryFor(session) {
+    const knobs = permissionStateOf(this.ctx, session)
+    // A session that recorded a selection keeps it, and a session whose knobs
+    // cannot be read yet has no delegation evidence either.
+    if (knobs === undefined || knobs.preset != null) return undefined
+    const mode = knobs.sandbox
+    if (typeof mode !== 'string') return undefined
+    const sessions = /** @type {SessionHost | undefined} */ (serviceOf(this.ctx, 'sessions'))
+    let current = /** @type {SessionLike | undefined} */ (session)
+    for (let hop = 0; hop < MAX_DELEGATION_DEPTH; hop += 1) {
+      const parentId = current?.header?.parentSession
+      if (typeof parentId !== 'string') return undefined
+      const parent = /** @type {SessionLike | undefined} */ (sessions?.get?.(parentId))
+      if (parent === undefined || parent === null) return undefined
+      const entry = this._recordedEntryFor(parent)
+      // The mode the delegated session runs under is inherited from the same
+      // session, so a mismatch means the delegation pinned something else.
+      if (entry !== undefined) return entry.sandbox === mode ? entry : undefined
+      const parentKnobs = permissionStateOf(this.ctx, parent)
+      if (parentKnobs === undefined || parentKnobs.preset != null) return undefined
+      current = parent
+    }
+    return undefined
   }
 
   /**
@@ -560,14 +640,35 @@ export class SandboxPresetsExtraService extends Service {
    */
   noteFor(session = undefined) {
     this._refresh()
-    const entry = this.presetFor(session)
-    if (entry === undefined || entry.sandbox === UNCONFINED_MODE) return ''
+    const selection = this._selectionFor(session)
+    if (selection === undefined || selection.entry.sandbox === UNCONFINED_MODE) return ''
+    const entry = selection.entry
     // Workspace entries are named by the real path they resolve to for this
     // session, so the model is told where the directories actually are.
     const roots = this.resolvedDirsFor(entry.name, this.workspaceRootFor(/** @type {SessionLike | undefined} */ (session)))
     if (roots.length === 0) return ''
+    // A delegated session never records the preset it inherited: the harness
+    // hands a child a bare mode instead of a preset name. Naming a preset that
+    // this session's own runtime context does not contain is exactly the claim
+    // the note tells the model to trust only while a snapshot names it, so the
+    // inherited case says where the grant came from instead.
+    const opening = selection.inherited
+      ? ` This session was delegated from one running the "${entry.name}" preset, so that preset's grant applies here too: it is NOT read-only for those directories:`
+      : ` While the "${entry.name}" preset is selected, this session is NOT read-only for those directories:`
+    // The inherited selection is re-read from the delegating session on every
+    // call, so it is not frozen at delegation. It does end when that session
+    // selects a preset with another sandbox mode: this session was confined
+    // under the mode the delegation pinned, and a grant whose mode no longer
+    // matches what confines it would describe a boundary the fence refuses.
+    const standing = selection.inherited
+      ? ` The grant is re-read from that session on every call: while it keeps a preset whose sandbox mode matches the one this session was delegated with, the directories above follow it; a preset with a different mode ends the grant.`
+      : ` They apply only while that preset remains selected.`
+    // Both cases end with the same two rules: a later selection in this session
+    // replaces the grant, and a later snapshot naming a different preset wins
+    // over this one. Snapshots are appended rather than replaced, so an older
+    // snapshot has to carry its own invalidation.
     return `IMPORTANT — this overrides the "Current DSH file policy" note above for the directories listed below.`
-      + ` While the "${entry.name}" preset is selected, this session is NOT read-only for those directories:`
+      + opening
       + ` writes to them are allowed${exceptionClauseFor(entry.sandbox)}.`
       + ` The ${name} plugin grants exactly these directories:`
       + '\n' + roots.map((root) => `- "${root}"`).join('\n')
@@ -575,7 +676,8 @@ export class SandboxPresetsExtraService extends Service {
       + ` Do not refuse, skip, defer, or request an approval/escalation for a write to such a path because the policy sounds read-only:`
       + ` call the write/edit/bash tool normally and follow any denial and escalation guidance it returns.`
       + ` Only an actual denial returned by the tool means the path is blocked.`
-      + ` They apply only while that preset remains selected.`
+      + standing
+      + ` Selecting another preset in this session replaces the grant above.`
       + ` If a later runtime-context snapshot names a different preset, the latest snapshot is authoritative.`
   }
 }

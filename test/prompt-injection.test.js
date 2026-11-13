@@ -47,7 +47,7 @@ const makeWritableDir = async () => {
  * Mount the plugin on a real host with the services it injects stubbed, and
  * return the pieces the cases assert against.
  */
-const mountService = async (/** @type {{ presets: Record<string, unknown>, selected: () => string }} */ options) => {
+const mountService = async (/** @type {{ presets: Record<string, unknown>, selected: () => string, sessions?: (id: string) => unknown, knobs?: (session: unknown) => unknown }} */ options) => {
     const host = await createHost();
     assert.ok(host !== undefined, 'a real Cordis host is available');
     /** @type {Record<string, unknown>} */
@@ -60,9 +60,13 @@ const mountService = async (/** @type {{ presets: Record<string, unknown>, selec
         permissionPresets: {
             presets,
             emitCatalogChanged() { },
-            permissionState: () => ({ preset: options.selected() }),
+            permissionState: (/** @type {unknown} */ target) => (options.knobs === undefined
+                ? { preset: options.selected() }
+                : options.knobs(target)),
         },
-        sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
+        sessions: { get: (/** @type {string} */ id) => (options.sessions === undefined
+                ? (id === session.id ? session : undefined)
+                : options.sessions(id)) },
         fs: {},
         sandbox: {},
     });
@@ -266,6 +270,66 @@ test('unloading the plugin removes its note from the prompt', { skip }, async ()
         const { assembled, refreshed } = await assembleNote(host, session);
         assert.equal(assembled, '', 'the context registration is gone with the plugin');
         assert.equal(refreshed, '', 'and so is the note the model would receive');
+    }
+    finally {
+        await host.disposeAll();
+        await rm(writable, { recursive: true, force: true });
+    }
+});
+test('a delegated session reaches the prompt with the preset it inherited', { skip }, async () => {
+    // The harness hands a delegated session a bare sandbox mode and a
+    // never-approve policy instead of a preset name, so a child's own runtime
+    // context never names one. Without the inherited selection the note — and
+    // the fence — are empty for every subagent, whatever its parent selected.
+    const writable = await makeWritableDir();
+    const parent = { id: 'parent' };
+    const child = { id: 'child', header: { parentSession: 'parent' } };
+    /** @type {Record<string, unknown>} */
+    const knobs = {
+        parent: { preset: 'plus', sandbox: 'workspace-write', approval: 'ask' },
+        child: { preset: null, sandbox: 'workspace-write', approval: 'never' },
+    };
+    const { host } = await mountService({
+        presets: { plus: { writableDirs: [writable] } },
+        selected: () => 'plus',
+        sessions: (/** @type {string} */ id) => [parent, child].find((session) => session.id === id),
+        knobs: (/** @type {unknown} */ target) => knobs[/** @type {{ id: string }} */ (target).id],
+    });
+    try {
+        const { assembled, refreshed } = await assembleNote(host, child);
+        assert.match(assembled, /delegated from one running the "plus" preset/);
+        assert.match(assembled, /it is NOT read-only for those directories/);
+        assert.ok(assembled.includes(`- "${writable}"`), 'the inherited directory is listed on its own line');
+        assert.doesNotMatch(assembled, /While the "plus" preset is selected/, 'the child never selected it itself');
+        assert.ok(assembled.includes('The dsh-sandbox-presets-extra plugin grants exactly these directories:'), 'the grant is attributed to the plugin, not to the child');
+        assert.equal(refreshed, assembled, 'the inherited note survives the per-request context refresh');
+        // The delegating session's own note keeps the wording it had before.
+        const own = await assembleNote(host, parent);
+        assert.match(own.refreshed, /While the "plus" preset is selected/);
+        assert.equal(own.refreshed, own.assembled, 'the recorded selection survives the refresh too');
+    }
+    finally {
+        await host.disposeAll();
+        await rm(writable, { recursive: true, force: true });
+    }
+});
+test('a delegated session with no inherited selection contributes no note', { skip }, async () => {
+    const writable = await makeWritableDir();
+    const child = { id: 'child', header: { parentSession: 'parent' } };
+    const { host } = await mountService({
+        presets: { plus: { writableDirs: [writable] } },
+        selected: () => 'plus',
+        // The parent exists but selected a preset this plugin does not configure,
+        // so there is no directory set to inherit.
+        sessions: (/** @type {string} */ id) => (id === 'parent' ? { id: 'parent' } : undefined),
+        knobs: (/** @type {unknown} */ target) => (/** @type {{ id: string }} */ (target).id === 'parent'
+            ? { preset: 'workspace-write', sandbox: 'workspace-write', approval: 'ask' }
+            : { preset: null, sandbox: 'workspace-write', approval: 'never' }),
+    });
+    try {
+        const { assembled, refreshed } = await assembleNote(host, child);
+        assert.equal(assembled, '', 'nothing is inherited through an unconfigured preset');
+        assert.equal(refreshed, '');
     }
     finally {
         await host.disposeAll();

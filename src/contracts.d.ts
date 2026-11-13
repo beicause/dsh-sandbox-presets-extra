@@ -113,10 +113,26 @@ export interface ConfineDeps {
   reportUnsupported: (runner: string) => void;
 }
 
-/** The parts of a session this plugin reads to find its workspace. */
+/**
+ * The parts of a session this plugin reads to find its workspace and its
+ * delegating parent.
+ */
 export interface SessionLike {
   readonly id?: unknown;
-  readonly header?: { readonly cwd?: unknown };
+  readonly header?: {
+    readonly cwd?: unknown;
+    /**
+     * The session that delegated this one, present only on a subagent session.
+     * The session log rejects a non-string value, so the runtime type is exactly
+     * this; the reading code still checks before trusting it.
+     */
+    readonly parentSession?: string;
+  };
+}
+
+/** The session service, read to follow a delegation chain to its parent. */
+export interface SessionHost {
+  get?(id: unknown): unknown;
 }
 
 /**

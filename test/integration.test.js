@@ -700,3 +700,279 @@ test('a recognized service is wrapped without any warning', { skip }, async () =
     assert.notEqual(wrapped.checkedTarget.name, undefined);
     ctx.disposeEffects();
 });
+test('a delegated session inherits the preset its delegating session selected', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        const scratch = join(base, 'scratch');
+        await mkdir(extra);
+        await mkdir(scratch);
+        // The harness hands a delegated session only a bare sandbox mode and a
+        // never-approve policy: its own log names no preset, so the selection has
+        // to be read back from the session that delegated it.
+        const parent = { id: 'parent', header: {} };
+        const child = { id: 'child', header: { parentSession: 'parent' } };
+        /** @type {Record<string, unknown>} */
+        const knobs = {
+            parent: { preset: 'workspace-write-extra', sandbox: 'workspace-write', approval: 'ask' },
+            child: { preset: null, sandbox: 'workspace-write', approval: 'never' },
+        };
+        const prompt = promptRegistry();
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => (session === undefined ? undefined : knobs[/** @type {{ id: string }} */ (session).id]),
+            },
+            sessions: { get: (/** @type {string} */ id) => [parent, child].find((session) => session.id === id) },
+            systemPrompt: prompt,
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: {
+                'workspace-write-extra': { writableDirs: [extra] },
+                scratch: { sandbox: 'read-only', writableDirs: [scratch] },
+            },
+        }));
+        await service.ready();
+        // The child recorded no preset of its own, so without the inheritance
+        // both the fence and the note would be empty — the bug this covers.
+        assert.equal(service.presetFor(child)?.name, 'workspace-write-extra');
+        assert.deepEqual(service.rootsFor(child), [extra]);
+        // The enforcement path resolves the same way, per call.
+        assert.deepEqual(service.extraRootsFor({ mode: 'workspace-write', sessionId: 'child' }), [extra]);
+        // The parent keeps exactly its own selection.
+        assert.equal(service.presetFor(parent)?.name, 'workspace-write-extra');
+        // A session that selected nothing and was delegated nothing still gets nothing.
+        assert.equal(service.presetFor({ id: 'stranger', header: {} }), undefined);
+        // The note names where the grant came from, because this session's own
+        // runtime context never names a preset.
+        const note = prompt.render(child);
+        assert.match(note, /delegated from one running the "workspace-write-extra" preset/);
+        assert.match(note, /it is NOT read-only for those directories/);
+        assert.ok(note.includes('- "' + extra + '"'), 'the inherited directory is listed');
+        assert.doesNotMatch(note, /While the "workspace-write-extra" preset is selected/, 'no claim that this session selected it');
+        // The read-only exception is the parent preset's own mode.
+        knobs.parent = { preset: 'scratch', sandbox: 'read-only', approval: 'ask' };
+        knobs.child = { preset: null, sandbox: 'read-only', approval: 'never' };
+        assert.equal(service.presetFor(child)?.name, 'scratch');
+        assert.deepEqual(service.extraRootsFor({ mode: 'read-only', sessionId: 'child' }), [scratch]);
+        assert.match(prompt.render(child), /even under the read-only policy above/);
+        // The inherited grant follows the delegating selection rather than a
+        // snapshot taken at delegation.
+        knobs.parent = { preset: null, sandbox: 'read-only', approval: 'ask' };
+        assert.equal(service.presetFor(child), undefined, 'a parent that selected nothing grants nothing');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a delegation only inherits a preset whose mode the child actually runs under', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        await mkdir(extra);
+        const parent = { id: 'parent', header: {} };
+        /** @type {Record<string, unknown>} */
+        const knobs = {
+            // A shipped preset this plugin does not own: nothing to inherit.
+            unowned: { preset: 'workspace-write', sandbox: 'workspace-write', approval: 'ask' },
+        };
+        const prompts = promptRegistry();
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => {
+                    const id = /** @type {{ id?: string }} */ (session ?? {}).id;
+                    return id === undefined ? undefined : knobs[id];
+                },
+            },
+            sessions: { get: (/** @type {string} */ id) => (id === parent.id ? parent : undefined) },
+            systemPrompt: prompts,
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { plus: { writableDirs: [extra] }, scratch: { sandbox: 'read-only', writableDirs: [extra] } },
+        }));
+        await service.ready();
+        // A parent that selected a preset this plugin does not configure grants
+        // nothing: this plugin cannot know what its directories are.
+        knobs.parent = knobs.unowned;
+        const child = { id: 'child', header: { parentSession: 'parent' } };
+        knobs.child = { preset: null, sandbox: 'workspace-write', approval: 'never' };
+        assert.equal(service.presetFor(child), undefined);
+        assert.deepEqual(service.rootsFor(child), []);
+        assert.equal(prompts.render(child), '');
+        // A configured preset is inherited only when the delegation pinned the same
+        // mode: a child pinned to read-only under a workspace-write parent did not
+        // get that preset's write access, so naming the directories would lie.
+        knobs.parent = { preset: 'plus', sandbox: 'workspace-write', approval: 'ask' };
+        knobs.child = { preset: null, sandbox: 'read-only', approval: 'never' };
+        assert.equal(service.presetFor(child), undefined, 'a mode mismatch inherits nothing');
+        knobs.child = { preset: null, sandbox: 'workspace-write', approval: 'never' };
+        assert.equal(service.presetFor(child)?.name, 'plus', 'the matching mode inherits');
+        // A parent with such a selection but no parent link of its own is not a
+        // delegated session, and a chain that ends is not followed forever.
+        assert.equal(service.presetFor(parent)?.name, 'plus');
+        const orphan = { id: 'orphan', header: { parentSession: 'nowhere' } };
+        knobs.orphan = { preset: null, sandbox: 'workspace-write', approval: 'never' };
+        assert.equal(service.presetFor(orphan), undefined, 'a link to a missing session inherits nothing');
+        // A malformed chain that points at itself must terminate.
+        const loop = { id: 'loop', header: { parentSession: 'loop' } };
+        knobs.loop = { preset: null, sandbox: 'workspace-write', approval: 'never' };
+        assert.equal(service.presetFor(loop), undefined, 'a self-referential chain terminates');
+        // A session whose own selection is recorded keeps it regardless of the parent.
+        knobs.child = { preset: 'scratch', sandbox: 'read-only', approval: 'ask' };
+        assert.equal(service.presetFor(child)?.name, 'scratch');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a delegated session inside a delegated session follows the chain to a selection', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        await mkdir(extra);
+        // root selected the preset; middle is itself delegated and selected
+        // nothing; leaf is delegated from middle.
+        const root = { id: 'root', header: {} };
+        const middle = { id: 'middle', header: { parentSession: 'root' } };
+        const leaf = { id: 'leaf', header: { parentSession: 'middle' } };
+        /** @type {Record<string, unknown>} */
+        const knobs = {
+            root: { preset: 'plus', sandbox: 'workspace-write', approval: 'ask' },
+            middle: { preset: null, sandbox: 'workspace-write', approval: 'never' },
+            leaf: { preset: null, sandbox: 'workspace-write', approval: 'never' },
+        };
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => knobs[/** @type {{ id: string }} */ (session).id],
+            },
+            sessions: { get: (/** @type {string} */ id) => [root, middle, leaf].find((session) => session.id === id) },
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { plus: { writableDirs: [extra] } },
+        }));
+        await service.ready();
+        assert.equal(service.presetFor(middle)?.name, 'plus');
+        assert.equal(service.presetFor(leaf)?.name, 'plus');
+        assert.deepEqual(service.extraRootsFor({ mode: 'workspace-write', sessionId: 'leaf' }), [extra]);
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a delegation is not followed when the session service is absent', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        await mkdir(extra);
+        const parent = { id: 'parent', header: {} };
+        const child = { id: 'child', header: { parentSession: 'parent' } };
+        // No `sessions` service at all: the profile that mounts this plugin
+        // without one still has to load, and a child with nothing to read from
+        // simply inherits nothing.
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => ({
+                    preset: session === parent ? 'plus' : null,
+                    sandbox: 'workspace-write',
+                    approval: 'never',
+                }),
+            },
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { plus: { writableDirs: [extra] } },
+        }));
+        await service.ready();
+        assert.equal(service.presetFor(parent)?.name, 'plus', 'a recorded selection needs no session service');
+        assert.equal(service.presetFor(child), undefined, 'without the session service there is no parent to read');
+        assert.deepEqual(service.rootsFor(child), []);
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('an unconfined delegating preset is never inherited by a confined child', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const anywhere = join(base, 'anywhere');
+        await mkdir(anywhere);
+        const parent = { id: 'parent', header: {} };
+        const child = { id: 'child', header: { parentSession: 'parent' } };
+        /** @type {Record<string, unknown>} */
+        const knobs = {
+            parent: { preset: 'wide', sandbox: 'danger-full-access', approval: 'never' },
+            child: { preset: null, sandbox: 'workspace-write', approval: 'never' },
+        };
+        const prompt = promptRegistry();
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => knobs[/** @type {{ id: string }} */ (session).id],
+            },
+            sessions: { get: (/** @type {string} */ id) => [parent, child].find((session) => session.id === id) },
+            systemPrompt: prompt,
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { wide: { sandbox: 'danger-full-access', writableDirs: [anywhere] } },
+        }));
+        await service.ready();
+        // A child confined to workspace-write must not inherit an unconfined
+        // preset: the directories would be meaningless, and naming them would
+        // claim a boundary the plugin does not grant.
+        assert.equal(service.presetFor(child), undefined);
+        assert.deepEqual(service.rootsFor(child), []);
+        assert.equal(prompt.render(child), '', 'no note is contributed for the child');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a delegation stops when an intermediate session selection is unreadable', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        await mkdir(extra);
+        const root = { id: 'root', header: {} };
+        const middle = { id: 'middle', header: { parentSession: 'root' } };
+        const leaf = { id: 'leaf', header: { parentSession: 'middle' } };
+        const { ctx } = fakeContext({
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                // The permission service is still activating, which it signals by
+                // throwing. That is not evidence of a selection, so the chain stops.
+                permissionState: (/** @type {unknown} */ session) => {
+                    if (/** @type {{ id?: string }} */ (session)?.id === 'middle') throw new Error('permission: presets are not ready');
+                    return session === root
+                        ? { preset: 'plus', sandbox: 'workspace-write', approval: 'ask' }
+                        : { preset: null, sandbox: 'workspace-write', approval: 'never' };
+                },
+            },
+            sessions: { get: (/** @type {string} */ id) => [root, middle, leaf].find((session) => session.id === id) },
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { plus: { writableDirs: [extra] } },
+        }));
+        await service.ready();
+        // The first hop reads the root through the middle session, and an
+        // unreadable middle means the claim cannot be made.
+        assert.equal(service.presetFor(middle), undefined, 'an unreadable session inherits nothing');
+        assert.equal(service.presetFor(leaf), undefined, 'and neither does its own child');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
