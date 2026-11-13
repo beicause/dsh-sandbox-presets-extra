@@ -66,8 +66,8 @@ live enforcement services **in place**, and unwraps them exactly on unload:
 
 * the mounted filesystem's containment check (`checkedTarget`) gains a retry of
   its denial against the directories the selected preset grants;
-* the sandbox provider's `confine` gains the matching `--bind` pairs in the
-  bwrap profile.
+* the sandbox provider's `confine` gains the matching `--bind` pairs — and one
+  `--dev-bind` pair per configured device — in the bwrap profile.
 
 The fence retry deliberately covers `read-only` as well: the stock fence refuses
 a read-only mutation before it ever resolves the target, so the wrapper resolves
@@ -162,6 +162,9 @@ Both surfaces are supported.
         writableDirs:
           - /tmp
           - ~/scratch
+      # Kernel device access for confined commands, nothing else writable.
+      gpu:
+        devices: [/dev/dri]
       # A relabelled entry: the client shows `name`, falling back to the key.
       rust-tools:
         sandbox: workspace-write
@@ -175,6 +178,7 @@ Both surfaces are supported.
 | `sandbox` | `workspace-write` | `read-only`, `workspace-write`, or `danger-full-access` |
 | `approval` | `ask` | `ask` or `never` |
 | `writableDirs` | `[]` | Directories writable on top of the selected mode |
+| `devices` | `[]` | Device paths exposed to confined commands as `--dev-bind` |
 | `name` | the preset key | Optional display label |
 | `description` | none | Optional one-line description |
 
@@ -227,6 +231,25 @@ cost the session every shell command rather than one refused write.
 `danger-full-access` may list them — they stay visible in the table — but that
 mode confines nothing, so they grant nothing extra and the model-facing note is
 left untouched.
+
+`devices` is a separate field because it grants something a directory grant
+cannot express: the stock profile mounts an empty `--dev /dev` over the whole
+root, so every device node the host has is absent inside the sandbox. A listed
+path — a directory of nodes such as `/dev/dri`, or a single node such as
+`/dev/kvm` — is mounted back with `--dev-bind <path> <path>`. The dev-bind form
+is what makes it work: a plain `--bind` mounts with `nodev`, so a confined child
+that opens `/dev/dri/renderD128` through it gets `EACCES` and the node is visible
+but unusable. A path only has to exist, so unlike `writableDirs` it may be a
+file, and it is checked again right before the profile is built, for the same
+reason a directory is.
+
+Nothing listed in `devices` widens the filesystem fence: the write and edit
+tools still refuse that path, and the model-facing note does not name it.
+Registering a device hands confined commands raw kernel access to that node —
+`/dev/dri` reaches the GPU of the host — so grant it deliberately rather than as
+a convenience.
+
+Like `writableDirs`, `devices` only has an effect under a confined mode.
 
 Preset order is configuration order, which is the order the picker offers them.
 
@@ -288,8 +311,9 @@ was not written against.
 ## Platform support
 
 * **Linux with `bwrap`** — fully supported. The configured directories join the
-  bubblewrap profile as `--bind <dir> <dir>`, so confined commands agree with the
-  write/edit tools.
+  bubblewrap profile as `--bind <dir> <dir>` and the configured devices as
+  `--dev-bind <path> <path>`, so confined commands agree with the write/edit
+  tools and can open the devices they were granted.
 * **Linux with `landlock`, and macOS `seatbelt`** — the write/edit tools are
   widened, but confined commands are not, because those profiles are built
   inside packages this plugin cannot extend. A warning is logged once instead of

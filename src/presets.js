@@ -9,7 +9,7 @@
  * it can be unit-tested directly.
  */
 
-import { expandExtraDirs } from './roots.js'
+import { expandDevicePaths, expandExtraDirs } from './roots.js'
 
 /** @typedef {import('./contracts.js').SandboxMode} SandboxMode */
 /** @typedef {import('./contracts.js').ConfinedMode} ConfinedMode */
@@ -118,11 +118,21 @@ export function normalizePresets(raw) {
       continue
     }
 
+    // Device paths are a separate list from the writable directories: they are
+    // mounted with `--dev-bind` so a confined child can open them, and they are
+    // deliberately never added to the filesystem fence's allow-list.
+    const devices = rawSpec.devices ?? []
+    if (!Array.isArray(devices)) {
+      rejected.push({ name, reason: 'devices must be a list of paths' })
+      continue
+    }
+
     entries.push({
       name,
       sandbox: /** @type {SandboxMode} */ (sandbox),
       approval: /** @type {ApprovalPolicy} */ (approval),
       writableDirs,
+      devices,
       // The display label, distinct from the table key. Left undefined when the
       // caller configured none, so the client renders the key itself instead of
       // a verbatim string it would not localize.
@@ -179,27 +189,34 @@ export function exceptionClauseFor(mode) {
 }
 
 /**
- * Expand every preset's configured directories to the canonical paths the
- * enforcement layers compare.
+ * Expand every preset's configured directories and device paths to the
+ * canonical paths the enforcement layers compare.
  *
  * @param {readonly PresetEntry[]} entries - normalized presets.
  * @returns {Promise<ExpandedPresetDirs>} a map of preset name to its canonical
- *   directories, plus every unusable entry with the preset that configured it.
+ *   directories and device paths, plus every unusable entry with the preset
+ *   that configured it.
  */
 export async function expandPresetDirs(entries) {
   /** @type {Map<string, string[]>} */
   const roots = new Map()
   /** @type {Map<string, string[]>} */
   const workspaceRoots = new Map()
+  /** @type {Map<string, string[]>} */
+  const devices = new Map()
   /** @type {UnusablePresetDir[]} */
   const unusable = []
 
   for (const entry of entries) {
     const { dirs, workspaceDirs, rejected } = await expandExtraDirs(entry.writableDirs)
+    const expandedDevices = await expandDevicePaths(entry.devices)
     roots.set(entry.name, dirs)
     workspaceRoots.set(entry.name, workspaceDirs)
-    for (const rejection of rejected) unusable.push({ name: entry.name, ...rejection })
+    devices.set(entry.name, expandedDevices.paths)
+    for (const rejection of [...rejected, ...expandedDevices.rejected]) {
+      unusable.push({ name: entry.name, ...rejection })
+    }
   }
 
-  return { roots, workspaceRoots, unusable }
+  return { roots, workspaceRoots, devices, unusable }
 }

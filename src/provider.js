@@ -26,8 +26,8 @@
  *     of scope for this plugin.
  */
 
-import { withExtraBinds } from './plan.js'
-import { existingDirectories } from './roots.js'
+import { withDeviceBinds, withExtraBinds } from './plan.js'
+import { existingDevicePaths, existingDirectories } from './roots.js'
 
 /** @typedef {import('./contracts.js').ConfinedArgv} ConfinedArgv */
 /** @typedef {import('./contracts.js').ConfineDeps} ConfineDeps */
@@ -101,7 +101,8 @@ export function applyExtraDirsConfine(sandbox, deps, report = undefined) {
     const result = await original.call(this, argv, policy, signal)
 
     const extra = deps.extraRootsFor(policy)
-    if (extra.length === 0) return result
+    const devices = deps.extraDevicesFor?.(policy) ?? []
+    if (extra.length === 0 && devices.length === 0) return result
 
     if (result.argv[0] !== 'bwrap') {
       deps.reportUnsupported(result.argv[0] ?? '')
@@ -115,9 +116,16 @@ export function applyExtraDirsConfine(sandbox, deps, report = undefined) {
     // is bound. A directory that vanished meanwhile grants nothing in this layer
     // either — the fence cannot resolve it, so the two stay consistent.
     const bindable = existingDirectories(extra)
-    if (bindable.length === 0) return result
+    // Device paths are re-checked the same way, for the same reason: a node
+    // that vanished makes bwrap fail the whole command.
+    const mountable = existingDevicePaths(devices)
+    if (bindable.length === 0 && mountable.length === 0) return result
 
-    return { ...result, argv: withExtraBinds(result.argv, bindable) }
+    // Directories first, then devices: a device path nested under a writable
+    // directory must keep the later, device-semantic mount.
+    let widened = withExtraBinds(result.argv, bindable)
+    if (mountable.length > 0) widened = withDeviceBinds(widened, mountable)
+    return { ...result, argv: widened }
   }
 
   Object.defineProperty(provider, WRAPPED, {

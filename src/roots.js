@@ -276,6 +276,98 @@ export function canonicalRootOf(candidate, within = undefined) {
 }
 
 /**
+ * Resolve one configured device path to the canonical path bwrap must mount.
+ *
+ * A device path is granted for access, not for writing, so it is validated by
+ * existence alone: `/dev/dri` is a directory holding device nodes, while
+ * `/dev/kvm` is a single character device, and both are legitimate entries.
+ * Symlinks are resolved for the same reason as directories — bwrap mounts real
+ * paths, and a symlinked source would otherwise be mounted as a link the
+ * confined child could not follow.
+ *
+ * @param {unknown} entry - one raw configured device path.
+ * @returns {Promise<{ path: string, reason?: undefined } | { path?: undefined, reason: string }>}
+ *   the canonical path, or the reason it cannot be granted.
+ */
+export async function expandDevicePath(entry) {
+  if (typeof entry !== 'string' || entry.trim() === '') return { reason: 'blank entry' }
+  const absolute = absoluteEntry(entry)
+  if (absolute === undefined) {
+    return { reason: 'not an absolute path (a leading ~ is allowed)' }
+  }
+  let canonical
+  try {
+    canonical = await realpath(absolute)
+  } catch (error) {
+    return { reason: isMissing(error) ? 'does not exist' : detailOf(error) }
+  }
+  return { path: canonical }
+}
+
+/**
+ * Expand the configured device paths of one preset.
+ *
+ * Nothing here is granted to the filesystem fence: a device path widens what a
+ * confined child can open through the kernel, never what the write tools may
+ * modify. Keeping the two lists apart is why this is a separate field rather
+ * than an entry of `writableDirs`.
+ *
+ * @param {unknown} entries - raw configured device entries.
+ * @returns {Promise<{ paths: string[], rejected: RejectedEntry[] }>} the usable
+ *   canonical paths and the entries that were rejected.
+ */
+export async function expandDevicePaths(entries) {
+  /** @type {string[]} */
+  const paths = []
+  /** @type {RejectedEntry[]} */
+  const rejected = []
+  /** @type {Set<string>} */
+  const seen = new Set()
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const { path, reason } = await expandDevicePath(entry)
+    if (path === undefined) {
+      rejected.push({ entry, reason })
+      continue
+    }
+    if (seen.has(path)) continue
+    seen.add(path)
+    paths.push(path)
+  }
+
+  return { paths, rejected }
+}
+
+/**
+ * Check that one device path is still the path it was expanded to.
+ *
+ * bwrap refuses the whole command on a bind source that is gone, so a device
+ * path that was removed, or replaced by a symlink, between configuration load
+ * and command build has to be dropped from this command rather than mounted
+ * blind.
+ *
+ * @param {string} path - one canonical device path.
+ * @returns {boolean} whether the path is still present at its own spelling.
+ */
+export function existingDevicePath(path) {
+  try {
+    return realpathSync(path) === path
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Keep only the device paths that are still present where they were expanded from.
+ *
+ * @param {readonly string[]} paths - canonical device paths.
+ * @returns {readonly string[]} the entries that are still present at their own path.
+ */
+export function existingDevicePaths(paths) {
+  return paths.filter((path) => existingDevicePath(path))
+}
+
+/**
  * Keep only the roots that are still the directory they were checked as.
  *
  * The directories are resolved once, when the configuration is read, but a

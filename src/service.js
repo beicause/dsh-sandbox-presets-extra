@@ -2,11 +2,17 @@
  * `ctx.sandboxPresets` — a registry of configured permission presets.
  *
  * Each entry of the `presets` config becomes one permission preset: a sandbox
- * mode, an approval policy, and a list of directories writable on top of
- * whatever that mode already allows. That covers both shapes the harness can
- * express — a `workspace-write` preset that adds directories beside the session
- * workspace, and a `read-only` preset that opens exactly the directories it
- * lists — and any number of each.
+ * mode, an approval policy, a list of directories writable on top of whatever
+ * that mode already allows, and a list of device paths exposed to confined
+ * commands. That covers both shapes the harness can express — a
+ * `workspace-write` preset that adds directories beside the session workspace,
+ * and a `read-only` preset that opens exactly the directories it lists — and any
+ * number of each.
+ *
+ * Device paths are kept apart from the writable directories because they grant
+ * a different thing: they are mounted with `--dev-bind` so a confined child can
+ * open them (`/dev/dri` for a GPU, `/dev/kvm` for a virtual machine), and they
+ * never widen the filesystem fence, so no write tool may modify them.
  *
  * The service is the single place that knows which directories a preset grants,
  * and whether the session making a call has that preset selected.
@@ -33,7 +39,7 @@ import z from '@deepseek-ai/schemastery'
 import { applyExtraDirsFence } from './fs.js'
 import { applyExtraDirsConfine } from './provider.js'
 import { isAbsolute } from 'node:path'
-import { WORKSPACE_PREFIX, canonicalRootOf, detailOf, workspaceEntryPath } from './roots.js'
+import { WORKSPACE_PREFIX, canonicalRootOf, detailOf, existingDevicePaths, workspaceEntryPath } from './roots.js'
 import {
   APPROVAL_POLICIES,
   DEFAULT_APPROVAL,
@@ -155,15 +161,25 @@ export class SandboxPresetsExtraService extends Service {
   static Config = z.object({
     /**
      * The permission presets to register, keyed by preset name. Each value
-     * names the sandbox mode and approval policy the preset selects, plus the
-     * directories it makes writable on top of that mode. Absolute paths; a
-     * leading `~` is expanded. Volatile, so the Settings page edits the whole
-     * table for this profile and changes apply live.
+     * names the sandbox mode and approval policy the preset selects, the
+     * directories it makes writable on top of that mode, and the device paths it
+     * exposes to confined commands. Absolute paths; a leading `~` is expanded.
+     * Volatile, so the Settings page edits the whole table for this profile and
+     * changes apply live.
      */
     presets: z.dict(z.object({
       sandbox: z.union(SANDBOX_MODES).default(DEFAULT_SANDBOX),
       approval: z.union(APPROVAL_POLICIES).default(DEFAULT_APPROVAL),
       writableDirs: z.array(z.string()).default([]),
+      /**
+       * Device paths to expose to confined commands, mounted with
+       * `--dev-bind` on top of the stock `--dev /dev`. Absolute paths; a
+       * leading `~` is expanded. Any existing path is accepted — a directory of
+       * nodes such as `/dev/dri` or one node such as `/dev/kvm`. This grants
+       * access through the kernel and never makes the path writable to the
+       * write/edit tools, so it is a separate field from `writableDirs`.
+       */
+      devices: z.array(z.string()).default([]),
       /** Optional display label for clients that show one. */
       name: z.string(),
       /** Optional one-line description for clients that show one. */
@@ -187,6 +203,8 @@ export class SandboxPresetsExtraService extends Service {
     this._dirs = new Map()
     /** Workspace subpaths per preset name. @type {Map<string, string[]>} */
     this._workspace = new Map()
+    /** Canonical device paths per preset name. @type {Map<string, string[]>} */
+    this._devices = new Map()
     /** Comparison key of the table the current snapshot came from. @type {string | undefined} */
     this._key = undefined
     /** Rejections already logged, so the warning is not repeated per refresh. @type {string | undefined} */
@@ -236,6 +254,44 @@ export class SandboxPresetsExtraService extends Service {
   }
 
   /**
+   * The device paths that apply to a call, from the policy the enforcing service
+   * received. Same resolution rules as {@link extraRootsFor}: no session, no
+   * preset, no devices, and `danger-full-access` needs none because it already
+   * sees the host's `/dev` unmasked.
+   *
+   * @param {unknown} [policy] - the resolved per-call policy, or `undefined` for a default call.
+   * @returns {readonly string[]} the canonical device paths the call may also open.
+   */
+  extraDevicesFor(policy = undefined) {
+    const resolved = /** @type {ResolvedPolicy | undefined} */ (policy)
+    if (resolved === undefined || resolved === null) return []
+    if (resolved.mode === UNCONFINED_MODE) return []
+    this._refresh()
+    const sessionId = resolved.sessionId
+    if (sessionId === undefined || sessionId === null) return []
+    const session = /** @type {SessionLike | undefined} */ (
+      /** @type {{ get?: (id: unknown) => unknown } | undefined} */ (serviceOf(this.ctx, 'sessions'))?.get?.(sessionId)
+    )
+    const entry = session === undefined ? undefined : this.presetFor(session)
+    if (entry === undefined) return []
+    return this.devicesForPreset(entry.name)
+  }
+
+  /**
+   * The canonical device paths one configured preset exposes.
+   *
+   * Re-checked per call rather than served from the loaded snapshot: a device
+   * node that was removed since the configuration loaded would make bwrap fail
+   * the whole confined command instead of granting nothing.
+   *
+   * @param {string} presetName - one configured preset name.
+   * @returns {readonly string[]} the device paths of that preset that still exist.
+   */
+  devicesForPreset(presetName) {
+    return existingDevicePaths(this._devices.get(presetName) ?? [])
+  }
+
+  /**
    * Wrap the live enforcement services in place. Both wrappers are additive:
    * the stock method stays authoritative, and each returns a disposer that
    * restores it exactly when this plugin unloads.
@@ -256,6 +312,7 @@ export class SandboxPresetsExtraService extends Service {
             ? applyExtraDirsFence(service, (policy) => this.extraRootsFor(policy), report)
             : applyExtraDirsConfine(service, {
               extraRootsFor: (policy) => this.extraRootsFor(policy),
+              extraDevicesFor: (policy) => this.extraDevicesFor(policy),
               reportUnsupported: (runner) => this._reportUnsupported(runner),
             }, report)
           if (disposer === undefined) {
@@ -280,23 +337,24 @@ export class SandboxPresetsExtraService extends Service {
     this._unrecognizedReported.add(key)
     this._warn(
       `the mounted "${serviceName}" service does not expose the interface this plugin extends, `
-      + 'so the configured writable directories are not enforced through it; this usually means the '
-      + 'installed dsh version moved that interface, and this plugin needs updating for it',
+      + 'so the configured writable directories and device paths are not enforced through it; this '
+      + 'usually means the installed dsh version moved that interface, and this plugin needs updating for it',
     )
   }
 
   /**
    * Report once that the selected backend cannot honor the configured
-   * directories, so the gap is visible instead of silently narrowing a preset.
+   * directories and device paths, so the gap is visible instead of silently
+   * narrowing a preset.
    * @param {string} runner - the runner program the stock provider selected.
    */
   _reportUnsupported(runner) {
     if (this._unsupportedReported) return
     this._unsupportedReported = true
     this._warn(
-      `the "${runner}" sandbox backend cannot extend its write allow-list from this plugin, `
-      + 'so the configured writable directories are not applied to confined commands on this backend '
-      + '(prefer bwrap, or use a danger-full-access preset for those commands)',
+      `the "${runner}" sandbox backend cannot extend its profile from this plugin, `
+      + 'so the configured writable directories and device paths are not applied to confined commands '
+      + 'on this backend (prefer bwrap, or use a danger-full-access preset for those commands)',
     )
   }
 
@@ -577,11 +635,12 @@ export class SandboxPresetsExtraService extends Service {
     this._key = key
     this._presets = entries
     this._publish?.()
-    this._pending = expandPresetDirs(entries).then(({ roots, workspaceRoots, unusable }) => {
+    this._pending = expandPresetDirs(entries).then(({ roots, workspaceRoots, devices, unusable }) => {
       // A newer configuration may have arrived while this expansion ran.
       if (this._key !== key) return
       this._dirs = roots
       this._workspace = workspaceRoots
+      this._devices = devices
       this._report([...rejected, ...unusable])
     }, (error) => {
       this._warn(`expanding the configured writable directories failed: ${detailOf(error)}`)
@@ -779,6 +838,12 @@ export class SandboxPresetsExtraService extends Service {
    * `danger-full-access` never confines, so it is excluded and no note is
    * contributed.
    *
+   * A preset may grant device paths instead of, or as well as, directories.
+   * Those are rendered as a separate clause: a device is opened through the
+   * kernel by a confined command and is never made writable to the write/edit
+   * tools, so folding them into the directory list would describe a write grant
+   * that does not exist.
+   *
    * @param {unknown} [session] - the calling session, or `undefined` for agentless calls.
    * @returns {string} the note, or an empty string when no directory applies.
    */
@@ -790,7 +855,10 @@ export class SandboxPresetsExtraService extends Service {
     // Workspace entries are named by the real path they resolve to for this
     // session, so the model is told where the directories actually are.
     const roots = this.resolvedDirsFor(entry.name, this.workspaceRootFor(/** @type {SessionLike | undefined} */ (session)))
-    if (roots.length === 0) return ''
+    // Devices are listed only while they are still there, which is the same
+    // check the bwrap profile makes, so the note names what a command can open.
+    const devices = this.devicesForPreset(entry.name)
+    if (roots.length === 0 && devices.length === 0) return ''
     // A delegated session never records the preset it inherited: the harness
     // hands a child a bare mode instead of a preset name. Naming a preset that
     // this session's own runtime context does not contain is exactly the claim
@@ -811,6 +879,15 @@ export class SandboxPresetsExtraService extends Service {
     // replaces the grant, and a later snapshot naming a different preset wins
     // over this one. Snapshots are appended rather than replaced, so an older
     // snapshot has to carry its own invalidation.
+    // A device grant is stated separately because it is a different kind of
+    // grant: it widens what a confined command may open, and it deliberately
+    // does not widen the write fence. Saying so keeps the model from reading the
+    // listing above as "everything named here is writable".
+    const deviceClause = devices.length === 0
+      ? ''
+      : `\nThe "${entry.name}" preset also exposes these device paths to confined commands, which may open them normally:`
+        + '\n' + devices.map((device) => `- "${device}"`).join('\n')
+        + `\nOpening a device is not a write grant: these paths stay refused by the write/edit tools.`
     return `IMPORTANT — this overrides the "Current DSH file policy" note above for the directories listed below.`
       + opening
       + ` writes to them are allowed${exceptionClauseFor(entry.sandbox)}.`
@@ -821,6 +898,7 @@ export class SandboxPresetsExtraService extends Service {
       + ` call the write/edit/bash tool normally and follow any denial and escalation guidance it returns.`
       + ` Only an actual denial returned by the tool means the path is blocked.`
       + standing
+      + deviceClause
       + ` Selecting another preset in this session replaces the grant above.`
       + ` If a later runtime-context snapshot names a different preset, the latest snapshot is authoritative.`
   }

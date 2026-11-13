@@ -51,7 +51,8 @@
 
 * 已挂载文件系统的包含性检查（`checkedTarget`）：当其拒绝发生时，针对当前预设授予的
   目录再重试一次；
-* 沙箱 provider 的 `confine`：在 bwrap profile 中补上对应的 `--bind` 对。
+* 沙箱 provider 的 `confine`：在 bwrap profile 中补上对应的 `--bind` 对，以及每个已配置
+  设备的一条 `--dev-bind` 对。
 
 fence 的重试**故意也覆盖 `read-only`**：自带 fence 在解析目标之前就直接拒绝 read-only
 写入，因此包装会自行解析目标并与该预设的目录比较。这正是 `read-only` 预设也能授予写入
@@ -124,6 +125,9 @@ system-prompt 服务在同一层内以名字为键，重名会被拒绝。
         writableDirs:
           - /tmp
           - ~/scratch
+      # 只给受限命令开放设备节点，其余一律不可写。
+      gpu:
+        devices: [/dev/dri]
       # 带自定义标签的一项：客户端显示 `name`，缺省则回退到预设键。
       rust-tools:
         sandbox: workspace-write
@@ -137,6 +141,7 @@ system-prompt 服务在同一层内以名字为键，重名会被拒绝。
 | `sandbox` | `workspace-write` | `read-only`、`workspace-write` 或 `danger-full-access` |
 | `approval` | `ask` | `ask` 或 `never` |
 | `writableDirs` | `[]` | 在所选模式之上额外可写的目录 |
+| `devices` | `[]` | 以 `--dev-bind` 开放给受限命令的设备路径 |
 | `name` | 预设键 | 可选显示标签 |
 | `description` | 无 | 可选单行描述 |
 
@@ -177,6 +182,20 @@ workspace-write-extra:
 `writableDirs` 只在受限模式下起作用。选了 `danger-full-access` 的预设仍可列出它们
 （它们也仍会出现在表里），但该模式本身不做任何限制，因此这些目录不会带来额外的可写
 范围，模型可见的那段说明也保持原样。
+
+`devices` 之所以独立成一个字段，是因为它授予的东西无法用目录授权表达：自带 profile 用一个
+空的 `--dev /dev` 盖住了整个根目录，于是宿主上的所有设备节点在沙箱内都不存在。列出的路径
+——既可以是 `/dev/dri` 这样的节点目录，也可以是 `/dev/kvm` 这样的单个节点——会以
+`--dev-bind <path> <path>` 重新挂回来。起作用的是 dev-bind 这种形式：普通 `--bind` 是
+`nodev` 挂载，受限子进程即使能看见 `/dev/dri/renderD128`，打开时也会得到 `EACCES`，节点可见
+却不可用。该路径只要求存在，因此与 `writableDirs` 不同，它可以是文件；它同样在构建 profile
+之前再复查一次，理由与目录相同。
+
+`devices` 里的路径不会放宽文件系统围栏：write/edit 工具仍然拒绝该路径，模型可见的那段说明
+也不会提到它。配置一个设备等于把该节点的裸内核访问权交给受限命令——`/dev/dri` 能碰到宿主
+的 GPU——因此应当刻意授予，而不是图方便。
+
+与 `writableDirs` 一样，`devices` 只在受限模式下起作用。
 
 预设顺序即配置顺序，也就是选择器展示它们的顺序。
 
@@ -226,8 +245,9 @@ workspace-write-extra:
 
 ## 平台支持
 
-* **Linux + `bwrap`** —— 完全支持。配置的目录以 `--bind <dir> <dir>` 加入 bubblewrap
-  profile，因此受限命令与 write/edit 文件工具的行为一致。
+* **Linux + `bwrap`** —— 完全支持。配置的目录以 `--bind <dir> <dir>`、配置的设备以
+  `--dev-bind <path> <path>` 加入 bubblewrap profile，因此受限命令与 write/edit 文件工具的
+  行为一致，并且能打开被授予的设备。
 * **Linux + `landlock`，以及 macOS `seatbelt`** —— write/edit 文件工具会被放宽，
   但受限命令不会，因为那些 profile 构建在本插件无法扩展的包内部。此时会告警一次，
   而不是假装支持。

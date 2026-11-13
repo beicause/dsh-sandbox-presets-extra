@@ -27,6 +27,7 @@ test('normalizePresets keeps configuration order and applies the field defaults'
         sandbox: 'workspace-write',
         approval: 'ask',
         writableDirs: ['/home/me/.cargo'],
+        devices: [],
         label: undefined,
         description: undefined,
     });
@@ -130,4 +131,45 @@ test('expandPresetDirs carries workspace entries as subpaths, per preset', async
     finally {
         await rm(base, { recursive: true, force: true });
     }
+});
+test('expandPresetDirs expands device paths separately from the writable directories', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'dsh-presets-'));
+    try {
+        // A device path may be a single node (the regular file stands in for one:
+        // what counts is that it exists and is not a directory) or a directory of
+        // nodes such as /dev/dri.
+        const node = join(base, 'kvm');
+        const nodes = join(base, 'dri');
+        await writeFile(node, '');
+        await mkdir(nodes);
+        const { entries } = normalizePresets({
+            gpu: { writableDirs: [], devices: [nodes, node, nodes] },
+            plain: { writableDirs: [nodes] },
+        });
+        const { roots, devices, unusable } = await expandPresetDirs(entries);
+        // Duplicates collapse to one canonical path each, in configuration order.
+        assert.deepEqual(devices.get('gpu'), [nodes, node]);
+        // A device entry never becomes a writable root, and a writable directory
+        // never becomes a device path: the two lists stay disjoint.
+        assert.deepEqual(roots.get('gpu'), []);
+        assert.deepEqual(devices.get('plain'), []);
+        assert.deepEqual(unusable, [], 'an existing device path is not a rejection');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a device entry that is not a path is rejected rather than guessed at', async () => {
+    const { entries } = normalizePresets({
+        gpu: { devices: ['relative/device', 42] },
+        listless: { devices: '/dev/dri' },
+    });
+    // A non-list `devices` makes the whole preset unusable, since the caller
+    // named something this plugin cannot honor.
+    assert.deepEqual(entries.map((entry) => entry.name), ['gpu']);
+    const { devices, unusable } = await expandPresetDirs(entries);
+    assert.deepEqual(devices.get('gpu'), []);
+    const reasons = unusable.map(({ reason }) => reason);
+    assert.ok(reasons.some((reason) => reason.startsWith('not an absolute path')), reasons.join(' | '));
+    assert.ok(reasons.includes('blank entry'), reasons.join(' | '));
 });

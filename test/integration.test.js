@@ -390,6 +390,51 @@ test('each preset grants only its own directories, and only to its own session',
         await rm(base, { recursive: true, force: true });
     }
 });
+test('the note names a preset device without calling it writable', { skip }, async () => {
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const extra = join(base, 'extra');
+        const node = join(base, 'fake-node');
+        await mkdir(extra);
+        await writeFile(node, '');
+        const session = { id: 'session-1' };
+        const prompt = promptRegistry();
+        let selected = 'gpu';
+        const { ctx } = fakeContext({
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: selected }) },
+            sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
+            systemPrompt: prompt,
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: {
+                gpu: { writableDirs: [extra], devices: [node] },
+                plain: { writableDirs: [extra] },
+            },
+        }));
+        await service.ready();
+        const note = prompt.render(session);
+        // A device is named so a confined command knows it may open it, and the
+        // note says outright that this is not a write grant: the write/edit tools
+        // keep refusing it, which is the distinction the two lists exist for.
+        assert.ok(note.includes(`- "${node}"`), 'the device path is listed on its own line');
+        assert.match(note, /also exposes these device paths to confined commands/);
+        assert.match(note, /Opening a device is not a write grant/);
+        // The directory is still listed as writable, in its own section.
+        assert.ok(note.includes(`- "${extra}"`), 'the writable directory is still listed');
+        // A preset with no devices contributes no device clause at all.
+        selected = 'plain';
+        assert.doesNotMatch(prompt.render(session), /device paths/, 'no device clause without a device');
+        selected = 'gpu';
+        // A device that disappeared between load and this call is not named.
+        await rm(node);
+        await service._refresh();
+        assert.doesNotMatch(prompt.render(session), /device paths/, 'a vanished device is not named');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
 test('an unconfined preset never amends the stock note', { skip }, async () => {
     const { SandboxPresetsExtraService } = await import('../src/service.js');
     const base = await makeFixture();
@@ -758,6 +803,104 @@ test('wrapping the live provider binds the selected preset directories per sessi
         ctx.disposeEffects();
         const restored = bindsOf(await sandbox.confine(argv, policy(inside)));
         assert.ok(!restored.binds.includes(extra), restored.binds.join(','));
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a preset device path reaches the real bwrap profile as a --dev-bind', { skip: skip || sandboxLocal === undefined ? 'the DSH sandbox package is not resolvable here' : false }, async () => {
+    if (sandboxLocal === undefined)
+        return;
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const workspace = join(base, 'workspace');
+        const node = join(base, 'fake-node');
+        await mkdir(workspace);
+        // Any existing path stands in for a device node, so this case runs on a
+        // machine without a GPU and still pins the mount form.
+        await writeFile(node, '');
+        const inside = { id: 'inside' };
+        const outside = { id: 'outside' };
+        const sandbox = new sandboxLocal.LocalSandboxProvider(new Context(), { runnerCommand: [], runnerFailureSignatures: [], probeTimeoutMs: 5_000 });
+        const { ctx } = fakeContext({
+            sandbox,
+            fs: { async checkedTarget(/** @type {unknown} */ _target, /** @type {unknown} */ _policy) { return 'unused'; } },
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: (/** @type {unknown} */ session) => ({
+                    preset: session === inside ? 'gpu' : 'workspace-write',
+                }),
+            },
+            sessions: { get: (/** @type {string} */ id) => [inside, outside].find((session) => session.id === id) },
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { gpu: { writableDirs: [], devices: [node] } },
+        }));
+        await service.ready();
+        /** @type {(session: { id: string }) => import('@deepseek-ai/dsh-sandbox').SandboxPolicy} */
+        const policy = (session) => ({ mode: 'workspace-write', workspaceRoot: workspace, sessionId: /** @type {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy['sessionId']} */ (session.id) });
+        const pairs = (/** @type {string[]} */ argv, /** @type {string} */ flag) => {
+            const at = argv.indexOf('--');
+            const found = [];
+            for (let index = 0; index < at; index += 1) {
+                if (argv[index] === flag) found.push(argv[index + 1]);
+            }
+            return found;
+        };
+        // The stock profile mounts an empty --dev /dev, so the device path is
+        // absent inside the sandbox; only the dev-bind form brings it back usable.
+        const widened = await sandbox.confine(['bash', '-c', 'true'], policy(inside));
+        assert.equal(widened.argv[0], 'bwrap', 'the real provider selects the bwrap rung');
+        assert.deepEqual(pairs(widened.argv, '--dev-bind'), [node], 'the device path is dev-bound');
+        assert.ok(!pairs(widened.argv, '--bind').includes(node), 'a device path is never a plain bind');
+        // A session that did not select the preset gets the stock profile.
+        assert.deepEqual(pairs((await sandbox.confine(['bash', '-c', 'true'], policy(outside))).argv, '--dev-bind'), []);
+        // Unloading restores the stock profile exactly.
+        ctx.disposeEffects();
+        assert.deepEqual(pairs((await sandbox.confine(['bash', '-c', 'true'], policy(inside))).argv, '--dev-bind'), []);
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a device path never widens the filesystem fence', { skip: skip || fsSandbox === undefined ? 'the DSH filesystem package is not resolvable here' : false }, async () => {
+    if (fsSandbox === undefined)
+        return;
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const workspace = join(base, 'workspace');
+        const node = join(base, 'fake-node');
+        await mkdir(workspace);
+        await writeFile(node, '');
+        const inside = { id: 'inside' };
+        const fsCtx = new Context();
+        Object.assign(fsCtx, { sandboxPolicy: { defaultMode: 'workspace-write' } });
+        const fs = new fsSandbox.SandboxedFileSystem(fsCtx, fsSandbox.SandboxedFileSystem.Config({ cwd: workspace }));
+        const { ctx } = fakeContext({
+            fs,
+            sandbox: { async confine() { throw new Error('unused here'); } },
+            permissionPresets: {
+                presets: {},
+                emitCatalogChanged() { },
+                permissionState: () => ({ preset: 'gpu' }),
+            },
+            sessions: { get: (/** @type {string} */ id) => (id === 'inside' ? inside : undefined) },
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { gpu: { writableDirs: [], devices: [node] } },
+        }));
+        await service.ready();
+        /** @type {(session: { id: string }) => import('@deepseek-ai/dsh-sandbox').SandboxPolicy} */
+        const policy = (session) => ({ mode: 'workspace-write', workspaceRoot: workspace, sessionId: /** @type {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy['sessionId']} */ (session.id) });
+        // The device path is granted for opening, not for writing: the fence still
+        // refuses a write to it, which is what keeps the two lists separate.
+        const target = await fs.resolve(node);
+        await assert.rejects(fs.writeText(target, 'x', undefined, undefined, policy(inside)), { code: 'FS_SANDBOX_DENIED' });
+        assert.deepEqual(service.extraRootsFor(policy(inside)), []);
+        assert.deepEqual(service.extraDevicesFor(policy(inside)), [node]);
     }
     finally {
         await rm(base, { recursive: true, force: true });

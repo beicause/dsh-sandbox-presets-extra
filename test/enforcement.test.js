@@ -8,12 +8,12 @@
  * Run with `node test/enforcement.test.js`.
  */
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { applyExtraDirsFence } from '../src/fs.js';
-import { withExtraBinds } from '../src/plan.js';
+import { withDeviceBinds, withExtraBinds } from '../src/plan.js';
 import { applyExtraDirsConfine } from '../src/provider.js';
 /**
  * A stand-in filesystem whose stock check throws `thrown`.
@@ -178,5 +178,64 @@ test('the confine wrapper binds the reported directories and reports other backe
     assert.equal(applyExtraDirsConfine({}, deps), undefined);
     assert.equal(applyExtraDirsConfine(undefined, deps), undefined);
     assert.equal(applyExtraDirsConfine({ confine: 'not-a-function' }, deps), undefined);
+    restore?.();
+});
+test('withDeviceBinds mounts device paths with --dev-bind, before --', () => {
+    const argv = ['bwrap', '--ro-bind', '/', '/', '--dev', '/dev', '--', 'bash', '-c', 'true'];
+    assert.deepEqual(withDeviceBinds(argv, ['/dev/dri']), [
+        'bwrap', '--ro-bind', '/', '/', '--dev', '/dev',
+        '--dev-bind', '/dev/dri', '/dev/dri',
+        '--', 'bash', '-c', 'true',
+    ]);
+    // No separator: appended at the end rather than corrupting the command.
+    assert.deepEqual(withDeviceBinds(['bwrap', '--dev', '/dev'], ['/dev/kvm']), [
+        'bwrap', '--dev', '/dev', '--dev-bind', '/dev/kvm', '/dev/kvm',
+    ]);
+    // The input is never mutated, so the stock argv stays reusable.
+    const original = ['bwrap', '--', 'bash'];
+    withDeviceBinds(original, ['/dev/dri']);
+    assert.deepEqual(original, ['bwrap', '--', 'bash']);
+});
+test('the confine wrapper dev-binds the reported device paths after the directory binds', async () => {
+    const argv = ['bwrap', '--ro-bind', '/', '/', '--dev', '/dev', '--', 'bash', '-c', 'true'];
+    const { dirs: [extra], cleanup } = await makeExtraDirs(1);
+    // A device path is any existing path: a regular file stands in for a node,
+    // which is what makes this test runnable on a machine with no GPU.
+    const node = join(extra, 'fake-node');
+    await writeFile(node, '');
+    const sandbox = fakeSandbox(argv);
+    const restore = applyExtraDirsConfine(sandbox, {
+        extraRootsFor: (/** @type {unknown} */ policy) => (/** @type {{ extra?: string[] }} */ (policy)?.extra ?? []),
+        extraDevicesFor: (/** @type {unknown} */ policy) => (/** @type {{ devices?: string[] }} */ (policy)?.devices ?? []),
+        reportUnsupported: () => { },
+    });
+    // Both lists widen the same profile in one call, directories first so a
+    // device nested under one keeps the device semantics of the later mount.
+    const widened = await sandbox.confine([], { mode: 'workspace-write', extra: [extra], devices: [node] });
+    assert.deepEqual(widened.argv, [
+        'bwrap', '--ro-bind', '/', '/', '--dev', '/dev',
+        '--bind', extra, extra, '--dev-bind', node, node,
+        '--', 'bash', '-c', 'true',
+    ]);
+    // Devices alone still widen a profile that grants no directory.
+    assert.deepEqual((await sandbox.confine([], { mode: 'read-only', devices: [node] })).argv, [
+        'bwrap', '--ro-bind', '/', '/', '--dev', '/dev',
+        '--dev-bind', node, node, '--', 'bash', '-c', 'true',
+    ]);
+    // A device that vanished before the command was built is dropped: bwrap
+    // fails the whole command on a missing dev-bind source.
+    await rm(node);
+    assert.deepEqual((await sandbox.confine([], { mode: 'read-only', devices: [node] })).argv, argv);
+    // A caller that reports no devices keeps the directory-only behaviour.
+    const dirsOnly = fakeSandbox(argv);
+    applyExtraDirsConfine(dirsOnly, {
+        extraRootsFor: () => [extra],
+        reportUnsupported: () => { },
+    });
+    assert.deepEqual((await dirsOnly.confine([], { mode: 'workspace-write' })).argv, [
+        'bwrap', '--ro-bind', '/', '/', '--dev', '/dev',
+        '--bind', extra, extra, '--', 'bash', '-c', 'true',
+    ]);
+    await cleanup();
     restore?.();
 });

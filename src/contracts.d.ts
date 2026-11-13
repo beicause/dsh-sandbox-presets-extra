@@ -37,6 +37,12 @@ export interface PresetEntry {
   readonly sandbox: SandboxMode;
   readonly approval: ApprovalPolicy;
   readonly writableDirs: readonly unknown[];
+  /**
+   * Device paths the preset exposes to confined commands as `--dev-bind`
+   * mounts. Separate from `writableDirs` because this grants access, not
+   * write permission: a device path never widens the filesystem fence.
+   */
+  readonly devices: readonly unknown[];
   /** Optional display label, distinct from the table key. */
   readonly label: string | undefined;
   /** Optional one-line description. */
@@ -85,6 +91,8 @@ export interface ExpandedPresetDirs {
    * root of the session making a call.
    */
   readonly workspaceRoots: Map<string, string[]>;
+  /** Canonical device paths per preset name, mounted as `--dev-bind`. */
+  readonly devices: Map<string, string[]>;
   readonly unusable: UnusablePresetDir[];
 }
 
@@ -102,6 +110,9 @@ export type { FsTarget as FenceTarget } from '@deepseek-ai/dsh-fs';
 /** Reports the extra directories that apply to one call's policy. */
 export type ExtraRootsFor = (policy: unknown) => readonly string[];
 
+/** Reports the device paths that apply to one call's policy. */
+export type ExtraDevicesFor = (policy: unknown) => readonly string[];
+
 /** The confined invocation the stock sandbox provider returns. */
 export type { ConfinedArgv } from '@deepseek-ai/dsh-sandbox';
 
@@ -109,6 +120,11 @@ export type { ConfinedArgv } from '@deepseek-ai/dsh-sandbox';
 export interface ConfineDeps {
   /** Reports the extra directories that apply to one call's policy. */
   extraRootsFor: ExtraRootsFor;
+  /**
+   * Reports the device paths that apply to one call's policy. Optional so a
+   * caller that grants no devices keeps the directory-only behaviour.
+   */
+  extraDevicesFor?: ExtraDevicesFor;
   /** Reports a runner whose profile this plugin cannot extend. */
   reportUnsupported: (runner: string) => void;
 }
