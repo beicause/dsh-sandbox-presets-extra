@@ -11,7 +11,10 @@
  *
  * The wrapper keeps the stock profile and inserts one `--bind <dir> <dir>` per
  * directory the session's selected preset grants, so confined CLI children can
- * write the same directories the write/edit tools can.
+ * write the same directories the write/edit tools can. Only directories that
+ * still exist are bound: bwrap fails a command outright on a missing or
+ * symlinked source, which would cost the session every confined command rather
+ * than one refused write.
  *
  * Scope is deliberately narrow:
  *   - only for a session that selected a configured preset, as reported by the
@@ -24,6 +27,7 @@
  */
 
 import { withExtraBinds } from './plan.js'
+import { existingDirectories } from './roots.js'
 
 /** @typedef {import('./contracts.js').ConfinedArgv} ConfinedArgv */
 /** @typedef {import('./contracts.js').ConfineDeps} ConfineDeps */
@@ -89,7 +93,16 @@ export function applyExtraDirsConfine(sandbox, deps) {
       return result
     }
 
-    return { ...result, argv: withExtraBinds(result.argv, extra) }
+    // The directories were resolved when the call began, and the profile is
+    // built later still: a granted one can be removed, or replaced by a
+    // symlink, in between. bwrap refuses a bind source that is not a directory
+    // and fails the whole command, so each entry is re-checked right before it
+    // is bound. A directory that vanished meanwhile grants nothing in this layer
+    // either — the fence cannot resolve it, so the two stay consistent.
+    const bindable = existingDirectories(extra)
+    if (bindable.length === 0) return result
+
+    return { ...result, argv: withExtraBinds(result.argv, bindable) }
   }
 
   Object.defineProperty(provider, WRAPPED, {

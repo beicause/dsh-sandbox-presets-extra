@@ -210,9 +210,18 @@ model-facing note names the real path.
 
 A `workspace:` entry must be relative — `workspace:/etc` and `workspace:~/x` are
 refused with a warning — and may not contain `..`, which is refused rather than
-silently clamped so a configuration cannot escape the workspace. A directory
-below the workspace that does not exist yet is still granted: the path is only
-compared, and the bwrap profile skips a bind source that is missing.
+silently clamped so a configuration cannot escape the workspace.
+
+The resolved directory is then checked against the filesystem on every call: it
+must exist, be a directory, and still resolve to a path inside the session
+workspace. The workspace is writable by the session, so a subpath below it can
+be anything the session put there — a symlink to `/` would otherwise widen the
+preset into a write grant for the whole filesystem. An entry that fails the
+check is **not granted** and is reported once, so the note in the prompt lists
+exactly the directories the fence will accept. For the same reason a directory
+is re-checked right before it is bound into the bwrap profile: a bind source
+that disappeared would make bwrap reject the whole confined command, which would
+cost the session every shell command rather than one refused write.
 
 `writableDirs` only has an effect under a confined mode. A preset selecting
 `danger-full-access` may list them — they stay visible in the table — but that

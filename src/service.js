@@ -33,7 +33,7 @@ import z from '@deepseek-ai/schemastery'
 import { applyExtraDirsFence } from './fs.js'
 import { applyExtraDirsConfine } from './provider.js'
 import { isAbsolute } from 'node:path'
-import { workspaceEntryPath } from './roots.js'
+import { WORKSPACE_PREFIX, canonicalRootOf, workspaceEntryPath } from './roots.js'
 import {
   APPROVAL_POLICIES,
   DEFAULT_APPROVAL,
@@ -181,6 +181,8 @@ export class SandboxPresetsExtraService extends Service {
     this._key = undefined
     /** Rejections already logged, so the warning is not repeated per refresh. @type {string | undefined} */
     this._reported = undefined
+    /** Workspace subpaths already reported as unusable, so a per-call check warns once. @type {Set<string>} */
+    this._reportedRoots = new Set()
     /** Guards the one-time unsupported-backend warning. @type {boolean} */
     this._unsupportedReported = false
     /** Enforcement services already reported as missing the expected seam. @type {Set<string>} */
@@ -408,6 +410,20 @@ export class SandboxPresetsExtraService extends Service {
    * workspace is, instead of being pinned to whatever the process default was
    * when the plugin loaded.
    *
+   * The join alone is not a grant. The workspace is a directory the session can
+   * write to, so a subpath below it may be anything the session made it: one
+   * that is missing would make bwrap reject the whole confined command, and one
+   * that is a symlink points wherever it likes — including outside the
+   * workspace, which would widen the preset past the boundary it names. Each
+   * candidate is therefore resolved and required to still be a directory inside
+   * the workspace; one that is not is left out and reported once, so the note in
+   * the prompt lists exactly the directories the fence will grant.
+   *
+   * The check is synchronous and re-runs per call rather than being folded into
+   * the loaded snapshot, because a workspace differs per session and because the
+   * prompt contribution that lists these directories is synchronous too: the two
+   * must agree call for call.
+   *
    * @param {string} presetName - one configured preset name.
    * @param {string | undefined} workspaceRoot - the workspace root of the calling session.
    * @returns {readonly string[]} the canonical directories plus the resolved workspace entries.
@@ -416,8 +432,36 @@ export class SandboxPresetsExtraService extends Service {
     const fixed = this.dirsForPreset(presetName)
     const subpaths = this._workspace.get(presetName) ?? []
     if (subpaths.length === 0 || workspaceRoot === undefined) return fixed
-    const resolved = subpaths.map((subpath) => workspaceEntryPath(subpath, workspaceRoot))
-    return [...fixed, ...resolved.filter((path) => !fixed.includes(path))]
+    /** @type {string[]} */
+    const resolved = []
+    for (const subpath of subpaths) {
+      const root = canonicalRootOf(workspaceEntryPath(subpath, workspaceRoot), workspaceRoot)
+      if (root.path === undefined) {
+        this._reportRoot(presetName, WORKSPACE_PREFIX + subpath, root.reason)
+        continue
+      }
+      if (fixed.includes(root.path) || resolved.includes(root.path)) continue
+      resolved.push(root.path)
+    }
+    return [...fixed, ...resolved]
+  }
+
+  /**
+   * Report once that one `workspace:` entry names nothing this session may
+   * write, so a typo or a symlink planted in the workspace does not silently
+   * narrow the preset on every call.
+   *
+   * @param {string} presetName - the preset the entry belongs to.
+   * @param {string} entry - the configured entry as written.
+   * @param {string} reason - why it is not granted.
+   */
+  _reportRoot(presetName, entry, reason) {
+    const key = `${presetName}\u0000${entry}\u0000${reason}`
+    if (this._reportedRoots.has(key)) return
+    this._reportedRoots.add(key)
+    this._warn(
+      `not granting ${JSON.stringify(entry)} of preset ${JSON.stringify(presetName)} for this session: ${reason}`,
+    )
   }
 
   /**

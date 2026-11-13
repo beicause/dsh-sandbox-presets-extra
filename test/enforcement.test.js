@@ -8,6 +8,9 @@
  * Run with `node test/enforcement.test.ts`.
  */
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { applyExtraDirsFence } from '../src/fs.js';
 import { withExtraBinds } from '../src/plan.js';
@@ -33,6 +36,24 @@ const fakeSandbox = (argv) => ({
         return { argv: [...argv], enforcement: 'full', denialSignatures: [], runnerFailureRules: [] };
     },
 });
+/**
+ * Real directories to grant. The confine wrapper only binds a source it can
+ * still stat, so a made-up path would be dropped and the profile would look
+ * untouched — the opposite of what these cases check.
+ *
+ * @param {number} count
+ * @returns {Promise<{ dirs: string[], cleanup: () => Promise<void> }>}
+ */
+const makeExtraDirs = async (count) => {
+    const parent = await mkdtemp(join(tmpdir(), 'dsh-extra-binds-'));
+    const dirs = [];
+    for (let index = 0; index < count; index += 1) {
+        const dir = join(parent, `extra-${index}`);
+        await mkdir(dir);
+        dirs.push(dir);
+    }
+    return { dirs, cleanup: () => rm(parent, { recursive: true, force: true }) };
+};
 test('withExtraBinds inserts the binds with the profile, before --', () => {
     const argv = ['bwrap', '--ro-bind', '/', '/', '--bind', '/work', '/work', '--', 'bash', '-c', 'echo -- hi'];
     assert.deepEqual(withExtraBinds(argv, ['/extra/a', '/extra/b']), [
@@ -108,6 +129,7 @@ test('the fence wrapper widens a containment denial in any confined mode', async
 });
 test('the confine wrapper binds the reported directories and reports other backends', async () => {
     const argv = ['bwrap', '--ro-bind', '/', '/', '--bind', '/work', '/work', '--', 'bash', '-c', 'true'];
+    const { dirs: [extra], cleanup } = await makeExtraDirs(1);
     /** @type {string[]} */
     const unsupported = [];
     const sandbox = fakeSandbox(argv);
@@ -116,18 +138,24 @@ test('the confine wrapper binds the reported directories and reports other backe
         reportUnsupported: (runner) => unsupported.push(runner),
     });
     // The extra directories join the profile, before the command separator.
-    const widened = await sandbox.confine(['bash', '-c', 'true'], { mode: 'workspace-write', extra: ['/extra/a'] });
+    const widened = await sandbox.confine(['bash', '-c', 'true'], { mode: 'workspace-write', extra: [extra] });
     assert.deepEqual(widened.argv, [
         'bwrap', '--ro-bind', '/', '/', '--bind', '/work', '/work',
-        '--bind', '/extra/a', '/extra/a', '--', 'bash', '-c', 'true',
+        '--bind', extra, extra, '--', 'bash', '-c', 'true',
     ]);
     assert.deepEqual(unsupported, []);
     // A read-only preset binds its directories the same way; the mode is not the
     // plugin's business, the reported directories are.
-    assert.deepEqual((await sandbox.confine([], { mode: 'read-only', extra: ['/extra/a'] })).argv, ['bwrap', '--ro-bind', '/', '/', '--bind', '/work', '/work', '--bind', '/extra/a', '/extra/a', '--', 'bash', '-c', 'true']);
+    assert.deepEqual((await sandbox.confine([], { mode: 'read-only', extra: [extra] })).argv, ['bwrap', '--ro-bind', '/', '/', '--bind', '/work', '/work', '--bind', extra, extra, '--', 'bash', '-c', 'true']);
     // No extra directories: the stock argv is returned untouched, in any mode.
     assert.deepEqual((await sandbox.confine([], { mode: 'workspace-write' })).argv, argv);
     assert.deepEqual((await sandbox.confine([], { mode: 'read-only' })).argv, argv);
+    // A directory that no longer exists is left out. bwrap refuses the whole
+    // command on a missing bind source, so binding it blind would cost the
+    // session every confined command instead of one refused write.
+    await rm(extra, { recursive: true, force: true });
+    assert.deepEqual((await sandbox.confine([], { mode: 'workspace-write', extra: [extra] })).argv, argv);
+    await cleanup();
     // A non-bwrap rung warns once instead of pretending to widen.
     const other = fakeSandbox(['landlock', '--', 'bash']);
     let reportCount = 0;

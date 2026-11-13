@@ -5,6 +5,7 @@
  * Kept free of Cordis and DSH imports so it can be unit-tested directly.
  */
 
+import { realpathSync, statSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -184,9 +185,11 @@ export async function expandExtraDirs(entries) {
  * Join one workspace subpath onto the workspace root of a session.
  *
  * The join is lexical on purpose: the root is already absolute and canonical,
- * and the subpath was normalized when the configuration was read. A path that
- * does not exist yet stays a plain candidate — the fence never grants a path it
- * cannot resolve, and the bwrap profile skips a source that is missing.
+ * and the subpath was normalized when the configuration was read. The result is
+ * a candidate only — it must still be checked against the filesystem before it
+ * is granted, because a subpath that is missing or that resolves outside the
+ * workspace would either break the whole confined command (bwrap fails on a
+ * bind whose source is absent) or widen the grant past the workspace.
  *
  * @param {string} subpath - the subpath recorded for a `workspace:` entry, possibly empty.
  * @param {string} workspaceRoot - the session's absolute workspace root.
@@ -199,6 +202,93 @@ export function workspaceEntryPath(subpath, workspaceRoot) {
 /** @param {string} path */
 const comparable = (path) =>
   process.platform === 'win32' ? path.toLowerCase() : path
+
+/**
+ * Whether one canonical path is the other or lies beneath it, by spelling only.
+ *
+ * @param {string} path - a canonical path.
+ * @param {string} base - a canonical base path.
+ * @returns {boolean} whether `path` is `base` or a descendant of it.
+ */
+const isLexicallyWithin = (path, base) => {
+  const target = comparable(path)
+  const root = comparable(base)
+  if (target === root) return true
+  const prefix = root.endsWith(sep) ? root : root + sep
+  return target.startsWith(prefix)
+}
+
+/**
+ * @typedef {{ path: string, reason?: undefined } | { path?: undefined, reason: string }} CanonicalRoot
+ */
+
+/**
+ * Check that one candidate directory is a directory that really exists, and
+ * that it still belongs to the workspace it was derived from.
+ *
+ * A workspace subpath is joined onto a workspace root lexically, so the result
+ * may be a symlink that points anywhere the session can read — including out of
+ * the workspace entirely. Granting that would widen the preset past the
+ * boundary it describes, so the candidate is resolved through the filesystem
+ * first and the answer is the resolved path; a resolved path that is no longer
+ * inside `within` is refused rather than clamped.
+ *
+ * This is synchronous on purpose. The note that tells the model which
+ * directories are writable is a synchronous prompt contribution, and the whole
+ * point of the check is that the note and the fence agree on the same list, so
+ * both must run the same check without a promise in between.
+ *
+ * @param {string} candidate - the absolute path the configuration names.
+ * @param {string} [within] - the workspace root the candidate must stay inside.
+ * @returns {CanonicalRoot} the resolved directory, or the reason it is not granted.
+ */
+export function canonicalRootOf(candidate, within = undefined) {
+  let canonical
+  try {
+    canonical = realpathSync(candidate)
+  } catch (error) {
+    return { reason: isMissing(error) ? 'does not exist' : detailOf(error) }
+  }
+  let info
+  try {
+    info = statSync(canonical)
+  } catch (error) {
+    return { reason: detailOf(error) }
+  }
+  if (!info.isDirectory()) return { reason: 'not a directory' }
+  if (within === undefined) return { path: canonical }
+
+  let base
+  try {
+    base = realpathSync(within)
+  } catch (error) {
+    return {
+      reason: isMissing(error)
+        ? `the session workspace ${JSON.stringify(within)} does not exist`
+        : detailOf(error),
+    }
+  }
+  if (!isLexicallyWithin(canonical, base)) {
+    return { reason: `it resolves to ${JSON.stringify(canonical)}, outside the session workspace ${JSON.stringify(base)}` }
+  }
+  return { path: canonical }
+}
+
+/**
+ * Keep only the roots that are still the directory they were checked as.
+ *
+ * The directories are resolved once, when the configuration is read, but a
+ * confined command is built much later: a granted directory may be removed, or
+ * replaced by a symlink, in between. A bind whose source is gone makes bwrap
+ * fail outright, which would take the whole command down with it, so the list
+ * is re-checked immediately before it is handed to the profile.
+ *
+ * @param {readonly string[]} roots - canonical directories.
+ * @returns {readonly string[]} the entries that are still directories at their own path.
+ */
+export function existingDirectories(roots) {
+  return roots.filter((root) => canonicalRootOf(root).path === root)
+}
 
 /** @param {string} path */
 async function statIfPresent(path) {

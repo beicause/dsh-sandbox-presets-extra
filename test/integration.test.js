@@ -10,7 +10,7 @@
  * Run with `node --test test/integration.test.ts`.
  */
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { optionalImport } from './support/host.js';
@@ -467,6 +467,123 @@ test('a workspace entry resolves against the workspace of each session', { skip 
         assert.ok(!note.includes(join(two, 'notes')), 'the other session\'s path is not named');
         // An unconfined mode still grants nothing, workspace entry or not.
         assert.deepEqual(service.extraRootsFor({ mode: 'danger-full-access', sessionId: 'first', workspaceRoot: one }), []);
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a workspace entry that escapes the workspace is never granted', { skip: skip || fsSandbox === undefined ? 'the DSH filesystem package is not resolvable here' : false }, async () => {
+    if (fsSandbox === undefined)
+        return;
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const workspace = join(base, 'workspace');
+        const outside = join(base, 'outside');
+        await mkdir(join(workspace, 'notes'), { recursive: true });
+        await mkdir(outside);
+        // The workspace is writable by the session, so a subpath below it is
+        // whatever the session put there. A link to a directory outside the
+        // workspace would turn one configured subpath into a grant for an
+        // arbitrarily wider area.
+        await symlink(outside, join(workspace, 'escape'));
+        // The real stock filesystem, whose containment check the plugin extends.
+        const fsCtx = new Context();
+        /** @type {import('@deepseek-ai/cordis').Context & { sandboxPolicy: { defaultMode: import('@deepseek-ai/dsh-sandbox').SandboxMode } }} */ (fsCtx).sandboxPolicy = { defaultMode: 'workspace-write' };
+        const fs = new fsSandbox.SandboxedFileSystem(fsCtx, fsSandbox.SandboxedFileSystem.Config({ cwd: workspace }));
+        /** @type {string[]} */ const warnings = [];
+        const session = { id: 'inside', header: { cwd: workspace } };
+        const prompt = promptRegistry();
+        const { ctx } = fakeContext({
+            fs,
+            sandbox: { async confine() { throw new Error('unused here'); } },
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: 'sneaky' }) },
+            sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
+            systemPrompt: prompt,
+        });
+        ctx.logger.warn = (/** @type {string} */ message) => { warnings.push(message); };
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { sneaky: { writableDirs: ['workspace:escape', 'workspace:notes'] } },
+        }));
+        await service.ready();
+        // Only the subpath that really stays inside the workspace is granted.
+        assert.deepEqual(service.rootsFor(session), [join(workspace, 'notes')]);
+        // The refusal is reported, and reported once rather than per call.
+        const refusals = () => warnings.filter((message) => message.includes('not granting')).length;
+        assert.equal(refusals(), 1, warnings.join(' | '));
+        assert.match(warnings.join(' | '), /outside the session workspace/);
+        service.rootsFor(session);
+        service.rootsFor(session);
+        assert.equal(refusals(), 1, 'the warning is not repeated per call');
+        // The note lists the granted directory only, so the prompt never names a
+        // path the fence would refuse.
+        const note = prompt.render(session);
+        assert.ok(note.includes(join(workspace, 'notes')), note);
+        assert.ok(!note.includes(join(workspace, 'escape')), note);
+        assert.ok(!note.includes(outside), note);
+        // The live fence refuses the escaped path, which is the point of the
+        // whole check: without it this write would have been widened through.
+        const policyFor = /** @type {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy} */ ({ mode: 'workspace-write', workspaceRoot: workspace, sessionId: 'inside' });
+        const escaped = await fs.resolve(join(workspace, 'escape', 'note.txt'));
+        await assert.rejects(fs.writeText(escaped, 'x', undefined, undefined, policyFor), { code: 'FS_SANDBOX_DENIED' });
+        // A granted subpath is still writable, so the refusal is scoped to the escape.
+        const granted = await fs.resolve(join(workspace, 'notes', 'note.txt'));
+        await fs.writeText(granted, 'x', undefined, undefined, policyFor);
+        assert.equal(await fs.readText(granted), 'x');
+    }
+    finally {
+        await rm(base, { recursive: true, force: true });
+    }
+});
+test('a workspace subpath that vanished never breaks a confined command', { skip: skip || sandboxLocal === undefined ? 'the DSH sandbox package is not resolvable here' : false }, async () => {
+    if (sandboxLocal === undefined)
+        return;
+    const { SandboxPresetsExtraService } = await import('../src/service.js');
+    const base = await makeFixture();
+    try {
+        const workspace = join(base, 'workspace');
+        const stale = join(workspace, 'stale');
+        await mkdir(stale, { recursive: true });
+        const session = { id: 'inside', header: { cwd: workspace } };
+        const sandbox = new sandboxLocal.LocalSandboxProvider(new Context(), { runnerCommand: [], runnerFailureSignatures: [], probeTimeoutMs: 5_000 });
+        const { ctx } = fakeContext({
+            sandbox,
+            fs: { async checkedTarget() { return 'unused'; } },
+            permissionPresets: { presets: {}, emitCatalogChanged() { }, permissionState: () => ({ preset: 'extra' }) },
+            sessions: { get: (/** @type {string} */ id) => (id === session.id ? session : undefined) },
+        });
+        const service = new SandboxPresetsExtraService(asContext(ctx), serviceConfig(SandboxPresetsExtraService.Config, {
+            presets: { extra: { writableDirs: ['workspace:stale', 'workspace:missing'] } },
+        }));
+        await service.ready();
+        const argv = ['bash', '-c', 'true'];
+        const policy = /** @type {import('@deepseek-ai/dsh-sandbox').SandboxPolicy} */ ({ mode: 'workspace-write', workspaceRoot: workspace, sessionId: 'inside' });
+        /** @type {(confined: { argv: string[] }) => string[]} */
+        const bindsOf = (confined) => {
+            const at = confined.argv.indexOf('--');
+            const binds = [];
+            for (let index = 0; index < at; index += 1) {
+                if (confined.argv[index] === '--bind')
+                    binds.push(confined.argv[index + 1]);
+            }
+            return binds;
+        };
+        // The subpath that does not exist is not granted, so the note and the
+        // fence agree, and no bind source is invented.
+        assert.deepEqual(service.rootsFor(session), [stale]);
+        const existing = bindsOf(await sandbox.confine(argv, policy));
+        assert.ok(existing.includes(stale), existing.join(','));
+        assert.ok(!existing.includes(join(workspace, 'missing')), existing.join(','));
+        // A directory that vanishes after it was granted is dropped right before
+        // the profile is built. Bwrap refuses a bind source that is not there,
+        // which would cost the session every shell command rather than one
+        // refused write.
+        await rm(stale, { recursive: true, force: true });
+        const after = await sandbox.confine(argv, policy);
+        assert.equal(after.argv[0], 'bwrap', 'the profile is still a usable bwrap command');
+        const binds = bindsOf(after);
+        assert.ok(!binds.includes(stale), binds.join(','));
+        assert.deepEqual(after.argv.slice(after.argv.indexOf('--') + 1), argv, 'the wrapped command is unchanged');
     }
     finally {
         await rm(base, { recursive: true, force: true });

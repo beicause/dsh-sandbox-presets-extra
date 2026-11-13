@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { absoluteEntry, expandExtraDirs, isPathUnder, isUnderAny, workspaceEntryPath } from '../src/roots.js';
+import { absoluteEntry, canonicalRootOf, existingDirectories, expandExtraDirs, isPathUnder, isUnderAny, workspaceEntryPath } from '../src/roots.js';
 const withTempTree = async (/** @type {(base: string) => Promise<unknown>} */ run) => {
     const base = await mkdtemp(join(tmpdir(), 'dsh-extra-dirs-'));
     try {
@@ -153,6 +153,63 @@ test('workspaceDirs is empty when nothing is workspace-relative', async () => {
     assert.deepEqual(workspaceDirs, []);
     const nonString = await expandExtraDirs([1, null, 'workspace-like']);
     assert.deepEqual(nonString.workspaceDirs, []);
+});
+test('canonicalRootOf grants a real directory and reports the rest', async () => {
+    await withTempTree(async (/** @type {string} */ base) => {
+        const dir = join(base, 'dir');
+        const file = join(base, 'file.txt');
+        await mkdir(dir);
+        await writeFile(file, 'x');
+        assert.equal(canonicalRootOf(dir).path, dir);
+        // A symlink is followed to the directory it names, so the path granted is
+        // the one the fence will compare, not the link.
+        const alias = join(base, 'alias');
+        await symlink(dir, alias);
+        assert.equal(canonicalRootOf(alias).path, dir);
+        assert.equal(canonicalRootOf(join(base, 'missing')).reason, 'does not exist');
+        assert.equal(canonicalRootOf(file).reason, 'not a directory');
+    });
+});
+test('canonicalRootOf refuses a directory that escapes the workspace it came from', async () => {
+    await withTempTree(async (/** @type {string} */ base) => {
+        const workspace = join(base, 'workspace');
+        const outside = join(base, 'outside');
+        await mkdir(join(workspace, 'notes'), { recursive: true });
+        await mkdir(outside);
+        // Inside the workspace: granted, at its real path.
+        assert.equal(canonicalRootOf(join(workspace, 'notes'), workspace).path, join(workspace, 'notes'));
+        // The workspace itself is inside the workspace.
+        assert.equal(canonicalRootOf(workspace, workspace).path, workspace);
+        // A sibling is not, and the reason names both paths.
+        const sibling = canonicalRootOf(outside, workspace);
+        assert.equal(sibling.path, undefined);
+        assert.match(/** @type {string} */ (sibling.reason), /outside the session workspace/);
+        // The escape that matters: a symlink inside the workspace that points out
+        // of it. The lexical join would have granted it.
+        await symlink(outside, join(workspace, 'escape'));
+        const escaped = canonicalRootOf(join(workspace, 'escape'), workspace);
+        assert.equal(escaped.path, undefined);
+        assert.match(/** @type {string} */ (escaped.reason), /outside the session workspace/);
+        // A workspace root that is itself gone refuses rather than falling back.
+        const gone = canonicalRootOf(join(workspace, 'notes'), join(base, 'absent'));
+        assert.match(/** @type {string} */ (gone.reason), /does not exist/);
+    });
+});
+test('existingDirectories drops a root that is no longer a directory there', async () => {
+    await withTempTree(async (/** @type {string} */ base) => {
+        const kept = join(base, 'kept');
+        const replaced = join(base, 'replaced');
+        const gone = join(base, 'gone');
+        await mkdir(kept);
+        await mkdir(replaced);
+        await mkdir(gone);
+        // A directory swapped for a symlink after it was granted is not a bind
+        // source: bwrap would refuse the whole command on it.
+        await rm(replaced, { recursive: true, force: true });
+        await symlink(kept, replaced);
+        await rm(gone, { recursive: true, force: true });
+        assert.deepEqual(existingDirectories([kept, replaced, gone]), [kept]);
+    });
 });
 test('workspaceEntryPath joins a subpath onto a workspace root', () => {
     assert.equal(workspaceEntryPath('notes', '/ws'), join('/ws', 'notes'));
